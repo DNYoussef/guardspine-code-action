@@ -2,7 +2,8 @@
 Decision Engine - findings in, one decision out.
 
 Vendored from guardspine-product (decision.engine + code_guard.audit.Finding).
-Eliminates the git+https:// private dependency that broke Docker builds.
+Last synced: 2026-03-08. Re-sync manually when guardspine-product decision logic changes.
+Kept vendored because codeguard-action runs in Docker without private pip indexes.
 
 No abstractions. No plugin system. Just a pure function that
 collapses a pile of findings into: merge, merge-with-conditions, or block.
