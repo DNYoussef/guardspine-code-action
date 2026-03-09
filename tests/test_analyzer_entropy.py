@@ -113,5 +113,88 @@ class TestAnalyzerAIDiffContent(unittest.TestCase):
         )
 
 
+class TestHashFieldWhitelist(unittest.TestCase):
+    """SHA-256 hash fields in evidence bundles must not trigger the crypto zone."""
+
+    def _make_diff(self, added_line: str) -> str:
+        return (
+            "diff --git a/evidence.py b/evidence.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/evidence.py\n"
+            "+++ b/evidence.py\n"
+            "@@ -1,0 +1,1 @@\n"
+            f"+{added_line}\n"
+        )
+
+    def _zones_from(self, diff: str) -> list:
+        analyzer = DiffAnalyzer(ai_review=False)
+        result = analyzer.analyze(diff, tier_override="L0")
+        return result["sensitive_zones"]
+
+    def test_content_hash_with_sha256_not_flagged_as_crypto(self):
+        """_hash field + 64-char hex value should NOT trigger crypto zone."""
+        sha = "a" * 64
+        diff = self._make_diff(f'content_hash = "{sha}"')
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertEqual(crypto_zones, [], f"crypto zone should not fire for _hash field, got {crypto_zones}")
+
+    def test_bundle_hash_with_sha256_prefix_not_flagged(self):
+        """sha256:-prefixed _hash field should NOT trigger crypto zone."""
+        sha = "b" * 64
+        diff = self._make_diff(f'"bundle_hash": "sha256:{sha}"')
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertEqual(crypto_zones, [])
+
+    def test_chain_hash_in_json_not_flagged(self):
+        """JSON-style chain_hash assignment should NOT trigger crypto zone."""
+        sha = "deadbeef" + "00" * 28
+        diff = self._make_diff(f'"chain_hash": "{sha}",')
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertEqual(crypto_zones, [])
+
+    def test_actual_crypto_operation_still_flagged(self):
+        """Real crypto operations (encrypt, decrypt, etc.) must still trigger."""
+        diff = self._make_diff("ciphertext = encrypt(plaintext, key)")
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertTrue(len(crypto_zones) > 0, "encrypt() should trigger crypto zone")
+
+    def test_hash_function_call_still_flagged(self):
+        """hashlib.sha256() calls are crypto operations, must still trigger."""
+        diff = self._make_diff("digest = hashlib.sha256(data).hexdigest()")
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertTrue(len(crypto_zones) > 0, "hashlib.sha256() should trigger crypto zone")
+
+    def test_non_hash_field_with_hex_still_flagged(self):
+        """A field NOT ending in _hash with a hex string should still trigger."""
+        sha = "c" * 64
+        diff = self._make_diff(f'secret_key = "{sha}"')
+        zones = self._zones_from(diff)
+        # "secret_key" matches auth zone (secret, key); crypto depends on context
+        auth_zones = [z for z in zones if z["zone"] == "auth"]
+        self.assertTrue(len(auth_zones) > 0, "secret_key should trigger auth zone")
+
+    def test_short_hex_in_hash_field_still_flagged(self):
+        """_hash field with non-64-char hex (e.g., truncated) should still trigger crypto."""
+        diff = self._make_diff('content_hash = "abcdef1234"')
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        self.assertTrue(len(crypto_zones) > 0, "short hex in _hash field should still trigger crypto zone")
+
+    def test_other_zones_still_fire_on_hash_field_line(self):
+        """Other zones (e.g., pii) should still fire even if crypto is suppressed."""
+        sha = "d" * 64
+        diff = self._make_diff(f'email_hash = "sha256:{sha}"  # email: alice@example.com')
+        zones = self._zones_from(diff)
+        crypto_zones = [z for z in zones if z["zone"] == "crypto"]
+        pii_zones = [z for z in zones if z["zone"] == "pii"]
+        self.assertEqual(crypto_zones, [], "crypto should be suppressed for _hash field")
+        self.assertTrue(len(pii_zones) > 0, "pii zone should still fire for email on same line")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -149,6 +149,23 @@ class DiffAnalyzer:
         "xss": r"(<script|<img\s|onerror|onload|innerHTML|\.html\(|document\.write|mark_safe|Markup\(|\bResponse\s*\(.*<)",
     }
 
+    # Lines matching this pattern are hash-field assignments (content_hash,
+    # bundle_hash, chain_hash, etc.) with SHA-256 hex values. These are
+    # content-addressable identifiers used in evidence bundles, NOT secrets
+    # or cryptographic operations.  When a line matches this pattern, the
+    # "crypto" zone is suppressed to avoid false positives.
+    _HASH_FIELD_RE = re.compile(
+        r"""
+        \b\w*_hash\b          # field name ending in _hash
+        .{0,20}               # up to 20 chars of assignment syntax
+        ["\']?                 # optional quote
+        (?:sha256:)?           # optional sha256: prefix
+        [0-9a-fA-F]{64}       # 64-char hex string (SHA-256)
+        ["\']?                 # optional closing quote
+        """,
+        re.VERBOSE,
+    )
+
     # File patterns for preliminary risk tier estimation
     FILE_PATTERNS = {
         "L0": [r"\.md$", r"\.txt$", r"\.rst$", r"LICENSE", r"CHANGELOG", r"README", r"\.gitignore$"],
@@ -395,7 +412,13 @@ class DiffAnalyzer:
                     # Removed lines are remediation context and should not
                     # trigger new-risk findings.
                     if line.is_added:
+                        # Pre-check: is this a hash-field assignment?
+                        # If so, suppress the "crypto" zone (R2: no special cases).
+                        is_hash_field = bool(self._HASH_FIELD_RE.search(line.value))
+
                         for zone_name, pattern in self.SENSITIVE_PATTERNS.items():
+                            if is_hash_field and zone_name == "crypto":
+                                continue
                             if re.search(pattern, line.value, re.IGNORECASE):
                                 # When a sanitized diff is available, redact
                                 # the preview to avoid leaking raw PII.

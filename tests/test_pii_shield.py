@@ -407,8 +407,8 @@ class TestSafeRegexList(unittest.TestCase):
         self.assertEqual(captured["payload"]["safe_regex_list"][0]["name"], "SafeGitSHA")
 
     @patch("pii_shield.requests.post")
-    def test_safe_regex_list_omitted_when_none(self, mock_post):
-        """No safe_regex_list in payload when not configured."""
+    def test_default_safe_regex_list_sent_when_none_configured(self, mock_post):
+        """Default safe_regex_list (hash field whitelist) is sent when not explicitly configured."""
         captured = {}
 
         def capture_post(url, json=None, headers=None, timeout=None):
@@ -433,7 +433,9 @@ class TestSafeRegexList(unittest.TestCase):
         )
         client.sanitize_text("hello world")
 
-        self.assertNotIn("safe_regex_list", captured["payload"])
+        self.assertIn("safe_regex_list", captured["payload"])
+        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
+        self.assertIn("HashFieldSHA256", names)
 
     @patch("pii_shield.requests.post")
     def test_safe_regex_list_invalid_json_ignored(self, mock_post):
@@ -474,6 +476,76 @@ class TestSafeRegexList(unittest.TestCase):
             self.assertEqual(os.environ["PII_SAFE_REGEX_LIST"], regex_json)
         finally:
             del os.environ["PII_SAFE_REGEX_LIST"]
+
+
+class TestDefaultSafeRegexList(unittest.TestCase):
+    """Default safe_regex_list should whitelist SHA-256 hash fields."""
+
+    @patch("pii_shield.requests.post")
+    def test_default_safe_regex_sent_when_none_provided(self, mock_post):
+        """When no safe_regex_list is provided, the default whitelist is sent."""
+        captured = {}
+
+        def capture_post(url, json=None, headers=None, timeout=None):
+            captured["payload"] = json
+            resp = Mock()
+            resp.status_code = 200
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {
+                "provider": "pii-shield-remote",
+                "sanitized_text": json["text"],
+                "redaction_count": 0,
+                "redactions_by_type": {},
+            }
+            return resp
+
+        mock_post.side_effect = capture_post
+
+        client = PIIShieldClient(
+            enabled=True,
+            mode="remote",
+            endpoint="https://shield.example/api/sanitize",
+        )
+        client.sanitize_text("content_hash = 'aabb' * 32")
+
+        self.assertIn("safe_regex_list", captured["payload"])
+        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
+        self.assertIn("HashFieldSHA256", names)
+        self.assertIn("BareHexSHA256", names)
+
+    @patch("pii_shield.requests.post")
+    def test_custom_safe_regex_overrides_default(self, mock_post):
+        """When user provides safe_regex_list, it replaces the default."""
+        captured = {}
+
+        def capture_post(url, json=None, headers=None, timeout=None):
+            captured["payload"] = json
+            resp = Mock()
+            resp.status_code = 200
+            resp.raise_for_status.return_value = None
+            resp.json.return_value = {
+                "provider": "pii-shield-remote",
+                "sanitized_text": json["text"],
+                "redaction_count": 0,
+                "redactions_by_type": {},
+            }
+            return resp
+
+        mock_post.side_effect = capture_post
+
+        custom = '[{"pattern": "^custom$", "name": "Custom"}]'
+        client = PIIShieldClient(
+            enabled=True,
+            mode="remote",
+            endpoint="https://shield.example/api/sanitize",
+            safe_regex_list=custom,
+        )
+        client.sanitize_text("hello world")
+
+        self.assertIn("safe_regex_list", captured["payload"])
+        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
+        self.assertEqual(names, ["Custom"])
+        self.assertNotIn("HashFieldSHA256", names)
 
 
 if __name__ == "__main__":
