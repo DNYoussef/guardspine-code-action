@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import hashlib
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -166,6 +168,33 @@ def _record_sanitization_stage(
     return summary
 
 
+def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict) -> bool:
+    """POST JSON to the GuardSpine backend. Returns True on success."""
+    url = api_url.rstrip("/") + path
+    body = json.dumps(payload, default=str).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        resp.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:200]
+        print(f"::warning::GuardSpine backend POST {path} failed ({exc.code}): {detail}")
+    except urllib.error.URLError as exc:
+        print(f"::warning::GuardSpine backend unreachable ({path}): {exc.reason}")
+    except Exception as exc:
+        print(f"::warning::GuardSpine backend POST {path} error: {exc}")
+    return False
+
+
 def main():
     """Main entrypoint for the action."""
     # Parse inputs from environment (set by GitHub Actions)
@@ -228,6 +257,10 @@ def main():
     # Auto-merge
     auto_merge = parse_bool(get_env("INPUT_AUTO_MERGE", "false"))
     auto_merge_method = get_env("INPUT_AUTO_MERGE_METHOD", "squash")
+
+    # GuardSpine backend integration (dashboard sync + Slack alerts)
+    guardspine_api_url = get_env("INPUT_GUARDSPINE_API_URL")
+    guardspine_api_key = get_env("INPUT_GUARDSPINE_API_KEY")
 
     # Decision policy
     decision_policy_raw = get_env("INPUT_DECISION_POLICY", "standard")
@@ -584,6 +617,14 @@ def main():
         set_output("bundle_path", str(relative_bundle))
         print(f"Bundle saved: {relative_bundle}")
         print(f"Bundle ID: {bundle['bundle_id']}")
+
+        # Sync bundle to GuardSpine dashboard
+        if guardspine_api_url and guardspine_api_key:
+            if _post_to_backend(guardspine_api_url, guardspine_api_key, "/bundles/import", bundle):
+                print(f"Bundle synced to GuardSpine dashboard")
+            else:
+                print("::warning::Bundle saved locally but dashboard sync failed")
+
         print("::endgroup::")
 
         # Upload as artifact
@@ -625,6 +666,23 @@ def main():
 
         print(f"SARIF saved: {sarif_path}")
         print("::endgroup::")
+
+    # Sync approval record to GuardSpine backend (triggers Slack + escalation)
+    if guardspine_api_url and guardspine_api_key and generate_bundle and bundle_path:
+        approval_payload = {
+            "repository": github_repository,
+            "pr_number": pr_number,
+            "commit_sha": github_sha,
+            "risk_tier": risk_tier,
+            "decision": decision_packet.decision,
+            "bundle_id": bundle.get("bundle_id", ""),
+            "findings_count": len(findings) if findings else 0,
+            "hard_blocks": len(decision_packet.hard_blocks),
+            "conditions": len(decision_packet.conditions) if hasattr(decision_packet, "conditions") else 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if _post_to_backend(guardspine_api_url, guardspine_api_key, "/approvals", approval_payload):
+            print("Approval record synced to GuardSpine")
 
     # Determine exit status (decision engine is authoritative)
     if decision_packet.decision == "block":

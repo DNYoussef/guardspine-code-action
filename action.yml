@@ -137,6 +137,12 @@ inputs:
     description: 'Merge method: merge, squash, or rebase'
     required: false
     default: 'squash'
+  guardspine_api_url:
+    description: 'GuardSpine backend URL (e.g., https://app.guardspine.ai/api/v1). Enables dashboard sync and Slack alerts.'
+    required: false
+  guardspine_api_key:
+    description: 'GuardSpine service API key for backend authentication'
+    required: false
 
 outputs:
   risk_tier:
