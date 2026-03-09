@@ -146,6 +146,26 @@ class TestAnalyzerFalsePositiveRegressions(unittest.TestCase):
             "Safe remediation should not be flagged as command injection",
         )
 
+    def test_doc_file_mentions_do_not_trigger_sensitive_zones(self):
+        """README.md describing auth/crypto features must not trigger zones."""
+        diff = (
+            "diff --git a/README.md b/README.md\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,1 +1,4 @@\n"
+            " # MyProject\n"
+            "+## Authentication\n"
+            "+Supports encrypted tokens, password hashing, and API key rotation.\n"
+            "+Uses SHA-256 for content verification and HMAC for signing.\n"
+        )
+        analysis = DiffAnalyzer(ai_review=False).analyze(diff)
+        zones = [z.get("zone") for z in analysis.get("sensitive_zones", [])]
+        self.assertEqual(
+            zones, [],
+            "Documentation files should not trigger any sensitive zone alerts",
+        )
+
     def test_duplicate_sensitive_zones_are_deduplicated_in_findings(self):
         analysis = {
             "files": [{"path": "src/a.py", "hunks": []}],

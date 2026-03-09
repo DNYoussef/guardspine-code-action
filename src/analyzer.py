@@ -166,6 +166,14 @@ class DiffAnalyzer:
         re.VERBOSE,
     )
 
+    # Documentation files should not trigger sensitive-zone detection.
+    # README mentions of "auth", "encrypt", etc. are descriptions, not code.
+    # Matches L0 patterns from FILE_PATTERNS above.
+    _DOC_FILE_RE = re.compile(
+        r"(?:\.md|\.txt|\.rst)$|(?:^|/)(?:README|LICENSE|CHANGELOG|CONTRIBUTING)",
+        re.IGNORECASE,
+    )
+
     # File patterns for preliminary risk tier estimation
     FILE_PATTERNS = {
         "L0": [r"\.md$", r"\.txt$", r"\.rst$", r"LICENSE", r"CHANGELOG", r"README", r"\.gitignore$"],
@@ -389,6 +397,10 @@ class DiffAnalyzer:
                 is_new=patched_file.is_added_file,
                 is_deleted=patched_file.is_removed_file,
             )
+            # Doc files (README, .md, .txt, etc.) should not trigger
+            # sensitive-zone alerts -- keyword mentions are descriptive,
+            # not executable code (R2: eliminate special cases).
+            is_doc_file = bool(self._DOC_FILE_RE.search(patched_file.path))
 
             # Extract hunks
             for hunk in patched_file:
@@ -411,7 +423,7 @@ class DiffAnalyzer:
                     # Check for sensitive patterns on introduced lines only.
                     # Removed lines are remediation context and should not
                     # trigger new-risk findings.
-                    if line.is_added:
+                    if line.is_added and not is_doc_file:
                         # Pre-check: is this a hash-field assignment?
                         # If so, suppress the "crypto" zone (R2: no special cases).
                         is_hash_field = bool(self._HASH_FIELD_RE.search(line.value))
