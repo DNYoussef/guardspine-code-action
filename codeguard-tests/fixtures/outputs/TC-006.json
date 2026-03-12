@@ -1,0 +1,56 @@
+{
+  "detected": true,
+  "risk_level": 3,
+  "signals": ["sql_injection", "f_string_query", "raw_sql", "orm_bypass", "user_input_in_query"],
+  "categories": ["sql_injection", "injection"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "summary": "User input interpolated directly into SQL query via f-string",
+      "evidence": ["f\"SELECT * FROM users WHERE email = '{email}'\""],
+      "file_paths": ["app/models/user.py"],
+      "remediation": "Use parameterized queries: cursor.execute(\"SELECT * FROM users WHERE email = ?\", (email,))"
+    },
+    {
+      "id": "F2",
+      "severity": "high",
+      "summary": "String concatenation builds SQL WHERE clause with user input",
+      "evidence": ["\"SELECT * FROM users WHERE name LIKE '%\" + name_pattern + \"%'\""],
+      "file_paths": ["app/models/user.py"],
+      "remediation": "Use parameterized queries: cursor.execute(\"SELECT * FROM users WHERE name LIKE ?\", (f\"%{name_pattern}%\",))"
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 3,
+        "signals": ["sql_injection", "f_string_query", "orm_bypass"],
+        "findings": ["F1", "F2"]
+      },
+      "gpt-4o": {
+        "risk_level": 3,
+        "signals": ["raw_sql", "user_input_in_query"],
+        "findings": ["F1", "F2"]
+      },
+      "gemini-2.0-flash": {
+        "risk_level": 3,
+        "signals": ["sql_injection", "raw_sql"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gemini-2.0-flash": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 3,
+      "signals": ["sql_injection", "f_string_query", "raw_sql", "orm_bypass", "user_input_in_query"],
+      "findings": ["F1", "F2"],
+      "human_required": false
+    }
+  }
+}

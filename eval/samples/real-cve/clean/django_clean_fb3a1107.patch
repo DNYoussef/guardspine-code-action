@@ -1,0 +1,173 @@
+diff --git a/docs/faq/general.txt b/docs/faq/general.txt
+index 203ea6f1e3..40a125313e 100644
+--- a/docs/faq/general.txt
++++ b/docs/faq/general.txt
+@@ -198,7 +198,7 @@ It's difficult to give an official citation format, for two reasons: citation
+ formats can vary wildly between publications, and citation standards for
+ software are still a matter of some debate.
+ 
+-For example, `APA style`_,  would dictate something like:
++For example, `APA style`_, would dictate something like:
+ 
+ .. code-block:: text
+ 
+@@ -217,7 +217,7 @@ If you need a web address, use https://www.djangoproject.com/.
+ If you need a name, just use "Django", without any tagline.
+ 
+ If you need a publication date, use the year of release of the version you're
+-referencing (e.g., 2013 for v1.5)
++referencing (e.g., 2013 for v1.5).
+ 
+ .. _APA style: https://apastyle.apa.org/
+ 
+diff --git a/docs/howto/csrf.txt b/docs/howto/csrf.txt
+index ef9ed41a44..ac826f3768 100644
+--- a/docs/howto/csrf.txt
++++ b/docs/howto/csrf.txt
+@@ -9,7 +9,7 @@ To take advantage of CSRF protection in your views, follow these steps:
+ #. The CSRF middleware is activated by default in the :setting:`MIDDLEWARE`
+    setting. If you override that setting, remember that
+    ``'django.middleware.csrf.CsrfViewMiddleware'`` should come before any view
+-   middleware that assume that CSRF attacks have been dealt with.
++   middleware that assumes that CSRF attacks have been dealt with.
+ 
+    If you disabled it, which is not recommended, you can use
+    :func:`~django.views.decorators.csrf.csrf_protect` on particular views
+diff --git a/docs/howto/custom-file-storage.txt b/docs/howto/custom-file-storage.txt
+index c69b20ba52..a064309210 100644
+--- a/docs/howto/custom-file-storage.txt
++++ b/docs/howto/custom-file-storage.txt
+@@ -38,7 +38,7 @@ You'll need to follow these steps:
+    the ``path()`` method.
+ 
+ #. Your storage class must be :ref:`deconstructible
+-   <custom-deconstruct-method>`  so it can be serialized when it's used on a
++   <custom-deconstruct-method>` so it can be serialized when it's used on a
+    field in a migration. As long as your field has arguments that are
+    themselves :ref:`serializable <migration-serializing>`, you can use the
+    ``django.utils.deconstruct.deconstructible`` class decorator for this
+diff --git a/docs/howto/custom-lookups.txt b/docs/howto/custom-lookups.txt
+index e287561834..b36a7d2a59 100644
+--- a/docs/howto/custom-lookups.txt
++++ b/docs/howto/custom-lookups.txt
+@@ -67,7 +67,7 @@ names are always lowercase strings containing only letters, but the only hard
+ requirement is that it must not contain the string ``__``.
+ 
+ We then need to define the ``as_sql`` method. This takes a ``SQLCompiler``
+-object, called ``compiler``,  and the active database connection.
++object, called ``compiler``, and the active database connection.
+ ``SQLCompiler`` objects are not documented, but the only thing we need to know
+ about them is that they have a ``compile()`` method which returns a tuple
+ containing an SQL string, and the parameters to be interpolated into that
+diff --git a/docs/intro/contributing.txt b/docs/intro/contributing.txt
+index 0342f3e816..b4d81584f4 100644
+--- a/docs/intro/contributing.txt
++++ b/docs/intro/contributing.txt
+@@ -67,7 +67,7 @@ and the processes involved. Specifically, we'll be covering the following:
+ 
+ Once you're done with the tutorial, you can look through the rest of
+ :doc:`Django's documentation on contributing</internals/contributing/index>`.
+-It contains lots of great information and is a must read for anyone who'd like
++It contains lots of great information and is a must-read for anyone who'd like
+ to become a regular contributor to Django. If you've got questions, it's
+ probably got the answers.
+ 
+@@ -121,7 +121,7 @@ Download the Django source code repository using the following command:
+ .. admonition:: Low bandwidth connection?
+ 
+     You can add the ``--depth 1`` argument to ``git clone`` to skip downloading
+-    all of Django's commit history, which reduces data transfer from  ~250 MB
++    all of Django's commit history, which reduces data transfer from ~250 MB
+     to ~70 MB.
+ 
+ Now that you have a local copy of Django, you can install it just like you
+@@ -283,7 +283,7 @@ Writing some tests for your ticket
+ 
+ In most cases, for a contribution to be accepted into Django it has to include
+ tests. For bug fix contributions, this means writing a regression test to
+-ensure that  the bug is never reintroduced into Django later on. A regression
++ensure that the bug is never reintroduced into Django later on. A regression
+ test should be written in such a way that it will fail while the bug still
+ exists and pass once the bug has been fixed. For contributions containing new
+ features, you'll need to include tests which ensure that the new features are
+diff --git a/docs/intro/index.txt b/docs/intro/index.txt
+index d049718b4c..40a00277af 100644
+--- a/docs/intro/index.txt
++++ b/docs/intro/index.txt
+@@ -32,7 +32,7 @@ place: read this material to quickly get up and running.
+     `list of Python resources for non-programmers`_
+ 
+     If you already know a few other languages and want to get up to speed with
+-    Python quickly, we recommend referring the official
++    Python quickly, we recommend referring to the official
+     `Python documentation`_, which provides comprehensive and authoritative
+     information about the language, as well as links to other resources such as
+     a list of `books about Python`_.
+diff --git a/docs/ref/contrib/admin/actions.txt b/docs/ref/contrib/admin/actions.txt
+index 4b92b7654a..084caca69e 100644
+--- a/docs/ref/contrib/admin/actions.txt
++++ b/docs/ref/contrib/admin/actions.txt
+@@ -221,7 +221,7 @@ that the action was successful::
+                 messages.SUCCESS,
+             )
+ 
+-This make the action match what the admin itself does after successfully
++This makes the action match what the admin itself does after successfully
+ performing an action:
+ 
+ .. image:: _images/actions-as-modeladmin-methods.png
+diff --git a/docs/ref/contrib/admin/index.txt b/docs/ref/contrib/admin/index.txt
+index 2e8a09e9b2..d52857d6ba 100644
+--- a/docs/ref/contrib/admin/index.txt
++++ b/docs/ref/contrib/admin/index.txt
+@@ -3097,7 +3097,7 @@ Templates can override or extend base admin templates as described in
+     as options to the admin class.
+ 
+     Raises :class:`~django.core.exceptions.ImproperlyConfigured` if a model is
+-    abstract. and ``django.contrib.admin.exceptions.AlreadyRegistered`` if a
++    abstract, and ``django.contrib.admin.exceptions.AlreadyRegistered`` if a
+     model is already registered.
+ 
+ .. method:: AdminSite.unregister(model_or_iterable)
+diff --git a/docs/ref/contrib/gis/tutorial.txt b/docs/ref/contrib/gis/tutorial.txt
+index 6df108af43..cc554846ab 100644
+--- a/docs/ref/contrib/gis/tutorial.txt
++++ b/docs/ref/contrib/gis/tutorial.txt
+@@ -636,8 +636,8 @@ a ``contains`` lookup using the ``pnt_wkt`` as the parameter:
+     >>> WorldBorder.objects.filter(mpoly__contains=pnt_wkt)
+     <QuerySet [<WorldBorder: United States>]>
+ 
+-Here, you retrieved a ``QuerySet`` with only one model: the border of the
+-United States (exactly what you would expect).
++Here, you retrieved a ``QuerySet`` with only one model instance: the border of
++the United States (exactly what you would expect).
+ 
+ Similarly, you may also use a :doc:`GEOS geometry object
+ </ref/contrib/gis/geos>`. Here, you can combine the ``intersects`` spatial
+diff --git a/docs/ref/request-response.txt b/docs/ref/request-response.txt
+index dead7af813..ba6041593b 100644
+--- a/docs/ref/request-response.txt
++++ b/docs/ref/request-response.txt
+@@ -307,8 +307,7 @@ middleware class is listed in :setting:`MIDDLEWARE`.
+         else:
+             ...  # Do something for anonymous users.
+ 
+-    The :meth:`auser` method does the same thing but can be used from async
+-    contexts.
++    The :meth:`auser` can be used to access the user in async contexts.
+ 
+ Methods
+ -------
+diff --git a/docs/topics/db/aggregation.txt b/docs/topics/db/aggregation.txt
+index ba797c0b68..8d8fff0211 100644
+--- a/docs/topics/db/aggregation.txt
++++ b/docs/topics/db/aggregation.txt
+@@ -734,7 +734,7 @@ To avoid this, you can wrap the non-aggregate expression with
+ 
+ .. code-block:: pycon
+ 
+-    >>> from django.db.models import F, Count, Greatest
++    >>> from django.db.models import AnyValue, F, Count, Greatest
+     >>> Book.objects.values(
+     ...     greatest_pages=Greatest("pages", 600),
+     ... ).annotate(

@@ -1,0 +1,19 @@
+{
+  "detected": false,
+  "risk_level": 0,
+  "signals": [],
+  "categories": ["formatting"],
+  "findings": [],
+  "council": {
+    "enabled": false,
+    "models": [],
+    "naive": {},
+    "round_robin": {},
+    "consensus": {
+      "risk_level": 0,
+      "signals": [],
+      "findings": [],
+      "human_required": false
+    }
+  }
+}

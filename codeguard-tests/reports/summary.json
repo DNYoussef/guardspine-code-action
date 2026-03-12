@@ -1,0 +1,353 @@
+{
+  "generated_at": "2026-02-18T13:06:50.220267+00:00",
+  "total_cases": 12,
+  "case_table": [
+    {
+      "case_id": "TC-001",
+      "expected_level": 4,
+      "actual_level": 4,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-002",
+      "expected_level": 4,
+      "actual_level": 4,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-003",
+      "expected_level": 4,
+      "actual_level": 4,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-004",
+      "expected_level": 3,
+      "actual_level": 3,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-005",
+      "expected_level": 3,
+      "actual_level": 3,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-006",
+      "expected_level": 3,
+      "actual_level": 3,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-007",
+      "expected_level": 2,
+      "actual_level": 2,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-008",
+      "expected_level": 2,
+      "actual_level": 2,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-009",
+      "expected_level": 1,
+      "actual_level": 1,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-010",
+      "expected_level": 1,
+      "actual_level": 1,
+      "detected": true,
+      "expected_detected": true,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-011",
+      "expected_level": 0,
+      "actual_level": 0,
+      "detected": false,
+      "expected_detected": false,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    },
+    {
+      "case_id": "TC-012",
+      "expected_level": 0,
+      "actual_level": 0,
+      "detected": false,
+      "expected_detected": false,
+      "strict_match": true,
+      "tolerant_match": true,
+      "pass_detection": true,
+      "pass_classification": true
+    }
+  ],
+  "confusion_matrix": [
+    [
+      2,
+      0,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      2,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      2,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      3,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      3
+    ]
+  ],
+  "false_negative_rate": 0.0,
+  "false_positive_rate": 0.0,
+  "council_effectiveness": {
+    "avg_naive_hit_rate": 1.0,
+    "consensus_correct_rate": 1.0,
+    "avg_actionability_pct": 1.0,
+    "per_case": [
+      {
+        "case_id": "TC-001",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0,
+          "gemini-2.0-flash": 0
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 3,
+          "naive_total": 3,
+          "consensus_risk_level": 4,
+          "expected_risk_level": 4,
+          "total_findings": 2,
+          "actionable_findings": 2
+        }
+      },
+      {
+        "case_id": "TC-002",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0,
+          "gemini-2.0-flash": 1
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 3,
+          "naive_total": 3,
+          "consensus_risk_level": 4,
+          "expected_risk_level": 4,
+          "total_findings": 2,
+          "actionable_findings": 2
+        }
+      },
+      {
+        "case_id": "TC-003",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0,
+          "gemini-2.0-flash": 1
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 3,
+          "naive_total": 3,
+          "consensus_risk_level": 4,
+          "expected_risk_level": 4,
+          "total_findings": 1,
+          "actionable_findings": 1
+        }
+      },
+      {
+        "case_id": "TC-004",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 2,
+          "naive_total": 2,
+          "consensus_risk_level": 3,
+          "expected_risk_level": 3,
+          "total_findings": 1,
+          "actionable_findings": 1
+        }
+      },
+      {
+        "case_id": "TC-005",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0,
+          "gemini-2.0-flash": 1
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 3,
+          "naive_total": 3,
+          "consensus_risk_level": 3,
+          "expected_risk_level": 3,
+          "total_findings": 2,
+          "actionable_findings": 2
+        }
+      },
+      {
+        "case_id": "TC-006",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0,
+          "gemini-2.0-flash": 0
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 3,
+          "naive_total": 3,
+          "consensus_risk_level": 3,
+          "expected_risk_level": 3,
+          "total_findings": 2,
+          "actionable_findings": 2
+        }
+      },
+      {
+        "case_id": "TC-007",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 2,
+          "naive_total": 2,
+          "consensus_risk_level": 2,
+          "expected_risk_level": 2,
+          "total_findings": 3,
+          "actionable_findings": 3
+        }
+      },
+      {
+        "case_id": "TC-008",
+        "naive_hit_rate": 1.0,
+        "round_robin_deltas": {
+          "claude-sonnet-4-5": 0,
+          "gpt-4o": 0
+        },
+        "consensus_correct": true,
+        "actionability_pct": 1.0,
+        "details": {
+          "naive_hits": 2,
+          "naive_total": 2,
+          "consensus_risk_level": 2,
+          "expected_risk_level": 2,
+          "total_findings": 1,
+          "actionable_findings": 1
+        }
+      }
+    ]
+  },
+  "per_model_breakdown": {
+    "claude-sonnet-4-5": {
+      "cases": 8,
+      "positive_deltas": 0,
+      "negative_deltas": 0,
+      "neutral": 8
+    },
+    "gpt-4o": {
+      "cases": 8,
+      "positive_deltas": 0,
+      "negative_deltas": 0,
+      "neutral": 8
+    },
+    "gemini-2.0-flash": {
+      "cases": 5,
+      "positive_deltas": 3,
+      "negative_deltas": 0,
+      "neutral": 2
+    }
+  }
+}

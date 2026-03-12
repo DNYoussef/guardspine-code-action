@@ -1,0 +1,481 @@
+diff --git a/changelog/3764.removal.rst b/changelog/3764.removal.rst
+new file mode 100644
+index 00000000..38d4ec78
+--- /dev/null
++++ b/changelog/3764.removal.rst
+@@ -0,0 +1,3 @@
++Used ``FutureWarning`` instead of ``DeprecationWarning`` for better visibility
++of existing deprecation notices. Rescheduled the removal of deprecated features
++to version 3.0.
+diff --git a/docs/v2-migration-guide.rst b/docs/v2-migration-guide.rst
+index 7011caab..41940e1e 100644
+--- a/docs/v2-migration-guide.rst
++++ b/docs/v2-migration-guide.rst
+@@ -184,9 +184,9 @@ Next you should try installing urllib3 v2.x locally and run your test suite.
+ 
+   $ python -m pip install -U 'urllib3>=2'
+ 
+-Because there are new ``DeprecationWarnings`` you should ensure that you're
++Because there are new ``FutureWarnings`` you should ensure that you're
+ able to see those warnings when running your test suite. To do so you can add
+-the following to your test setup to ensure even ``DeprecationWarnings`` are
++the following to your test setup to ensure even ``FutureWarnings`` are
+ output to the terminal:
+ 
+ .. code-block:: bash
+@@ -205,17 +205,17 @@ or you can opt-in within your Python code:
+   # You can change warning filters according to the filter rules:
+   # https://docs.python.org/3/library/warnings.html#warning-filter
+   import warnings
+-  warnings.filterwarnings("default", category=DeprecationWarning)
++  warnings.filterwarnings("default", category=FutureWarning)
+ 
+-Any failures or deprecation warnings you receive should be fixed as urllib3 v2.1.0 will remove all
++Any failures or deprecation warnings you receive should be fixed as urllib3 v3.0 will remove all
+ deprecated features. Many deprecation warnings will make suggestions about what to do to avoid the deprecated feature.
+ 
+ Warnings will look something like this:
+ 
+ .. code-block:: bash
+ 
+-  DeprecationWarning: 'ssl_version' option is deprecated and will be removed
+-  in urllib3 v2.6.0. Instead use 'ssl_minimum_version'
++  FutureWarning: 'ssl_version' option is deprecated and will be removed
++  in urllib3 v3.0. Instead use 'ssl_minimum_version'
+ 
+ Continue removing deprecation warnings until there are no more. After this you can publish a new release of your package
+ that supports both urllib3 1.26.x and 2.x.
+@@ -288,7 +288,7 @@ for requests and ``HTTPResponse.json()`` method on responses:
+ 
+ urllib3 2.x specifically targets CPython 3.9+ and PyPy 7.3.17+ (compatible with CPython 3.10)
+ and dropping support for Python versions 2.7, and 3.5 to 3.8.
+-  
++
+ By dropping end-of-life Python versions we're able to optimize
+ the codebase for Python 3.9+ by using new features to improve
+ performance and reduce the amount of code that needs to be executed
+diff --git a/noxfile.py b/noxfile.py
+index f5587907..99acc0fd 100644
+--- a/noxfile.py
++++ b/noxfile.py
+@@ -70,7 +70,7 @@ def tests_impl(
+ 
+     # Environment variables being passed to the pytest run.
+     pytest_session_envvars = {
+-        "PYTHONWARNINGS": "always::DeprecationWarning",
++        "PYTHONWARNINGS": "always::FutureWarning",
+         "COVERAGE_CORE": "sysmon",
+     }
+ 
+diff --git a/pyproject.toml b/pyproject.toml
+index 45538a6e..feab37e5 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -162,7 +162,7 @@ filterwarnings = [
+     # https://github.com/SeleniumHQ/selenium/issues/13328
+     '''default:unclosed file <_io\.BufferedWriter name='/dev/null'>:ResourceWarning''',
+     # https://github.com/SeleniumHQ/selenium/issues/14686
+-    '''default:setting remote_server_addr in RemoteConnection\(\) is deprecated, set in ClientConfig instance instead:DeprecationWarning'''
++    '''default:setting remote_server_addr in RemoteConnection\(\) is deprecated, set in ClientConfig instance instead:FutureWarning'''
+ ]
+ 
+ [tool.isort]
+diff --git a/src/urllib3/connection.py b/src/urllib3/connection.py
+index 2ceeb0a5..84e1dab9 100644
+--- a/src/urllib3/connection.py
++++ b/src/urllib3/connection.py
+@@ -531,8 +531,8 @@ class HTTPConnection(_HTTPConnection):
+         """
+         warnings.warn(
+             "HTTPConnection.request_chunked() is deprecated and will be removed "
+-            "in urllib3 v2.1.0. Instead use HTTPConnection.request(..., chunked=True).",
+-            category=DeprecationWarning,
++            "in urllib3 v3.0. Instead use HTTPConnection.request(..., chunked=True).",
++            category=FutureWarning,
+             stacklevel=2,
+         )
+         self.request(method, url, body=body, headers=headers, chunked=True)
+@@ -697,9 +697,9 @@ class HTTPSConnection(HTTPConnection):
+         """
+         warnings.warn(
+             "HTTPSConnection.set_cert() is deprecated and will be removed "
+-            "in urllib3 v2.1.0. Instead provide the parameters to the "
++            "in urllib3 v3.0. Instead provide the parameters to the "
+             "HTTPSConnection constructor.",
+-            category=DeprecationWarning,
++            category=FutureWarning,
+             stacklevel=2,
+         )
+ 
+diff --git a/src/urllib3/exceptions.py b/src/urllib3/exceptions.py
+index 58723fae..3d7e9b93 100644
+--- a/src/urllib3/exceptions.py
++++ b/src/urllib3/exceptions.py
+@@ -155,8 +155,8 @@ class NewConnectionError(ConnectTimeoutError, HTTPError):
+     def pool(self) -> HTTPConnection:
+         warnings.warn(
+             "The 'pool' property is deprecated and will be removed "
+-            "in urllib3 v2.1.0. Use 'conn' instead.",
+-            DeprecationWarning,
++            "in urllib3 v3.0. Use 'conn' instead.",
++            FutureWarning,
+             stacklevel=2,
+         )
+ 
+diff --git a/src/urllib3/fields.py b/src/urllib3/fields.py
+index 97c4730c..fe68e177 100644
+--- a/src/urllib3/fields.py
++++ b/src/urllib3/fields.py
+@@ -45,16 +45,16 @@ def format_header_param_rfc2231(name: str, value: _TYPE_FIELD_VALUE) -> str:
+         An RFC-2231-formatted unicode string.
+ 
+     .. deprecated:: 2.0.0
+-        Will be removed in urllib3 v2.1.0. This is not valid for
++        Will be removed in urllib3 v3.0. This is not valid for
+         ``multipart/form-data`` header parameters.
+     """
+     import warnings
+ 
+     warnings.warn(
+-        "'format_header_param_rfc2231' is deprecated and will be "
+-        "removed in urllib3 v2.1.0. This is not valid for "
++        "'format_header_param_rfc2231' is insecure, deprecated and will be "
++        "removed in urllib3 v3.0. This is not valid for "
+         "multipart/form-data header parameters.",
+-        DeprecationWarning,
++        FutureWarning,
+         stacklevel=2,
+     )
+ 
+@@ -104,7 +104,7 @@ def format_multipart_header_param(name: str, value: _TYPE_FIELD_VALUE) -> str:
+     .. versionchanged:: 2.0.0
+         Renamed from ``format_header_param_html5`` and
+         ``format_header_param``. The old names will be removed in
+-        urllib3 v2.1.0.
++        urllib3 v3.0.
+     """
+     if isinstance(value, bytes):
+         value = value.decode("utf-8")
+@@ -118,15 +118,15 @@ def format_header_param_html5(name: str, value: _TYPE_FIELD_VALUE) -> str:
+     """
+     .. deprecated:: 2.0.0
+         Renamed to :func:`format_multipart_header_param`. Will be
+-        removed in urllib3 v2.1.0.
++        removed in urllib3 v3.0.
+     """
+     import warnings
+ 
+     warnings.warn(
+         "'format_header_param_html5' has been renamed to "
+         "'format_multipart_header_param'. The old name will be "
+-        "removed in urllib3 v2.1.0.",
+-        DeprecationWarning,
++        "removed in urllib3 v3.0.",
++        FutureWarning,
+         stacklevel=2,
+     )
+     return format_multipart_header_param(name, value)
+@@ -136,15 +136,15 @@ def format_header_param(name: str, value: _TYPE_FIELD_VALUE) -> str:
+     """
+     .. deprecated:: 2.0.0
+         Renamed to :func:`format_multipart_header_param`. Will be
+-        removed in urllib3 v2.1.0.
++        removed in urllib3 v3.0.
+     """
+     import warnings
+ 
+     warnings.warn(
+         "'format_header_param' has been renamed to "
+         "'format_multipart_header_param'. The old name will be "
+-        "removed in urllib3 v2.1.0.",
+-        DeprecationWarning,
++        "removed in urllib3 v3.0.",
++        FutureWarning,
+         stacklevel=2,
+     )
+     return format_multipart_header_param(name, value)
+@@ -165,7 +165,7 @@ class RequestField:
+ 
+     .. versionchanged:: 2.0.0
+         The ``header_formatter`` parameter is deprecated and will
+-        be removed in urllib3 v2.1.0.
++        be removed in urllib3 v3.0.
+     """
+ 
+     def __init__(
+@@ -188,8 +188,8 @@ class RequestField:
+ 
+             warnings.warn(
+                 "The 'header_formatter' parameter is deprecated and "
+-                "will be removed in urllib3 v2.1.0.",
+-                DeprecationWarning,
++                "will be removed in urllib3 v3.0.",
++                FutureWarning,
+                 stacklevel=2,
+             )
+             self.header_formatter = header_formatter
+diff --git a/src/urllib3/poolmanager.py b/src/urllib3/poolmanager.py
+index 28ec82f0..3a2f28a0 100644
+--- a/src/urllib3/poolmanager.py
++++ b/src/urllib3/poolmanager.py
+@@ -328,8 +328,8 @@ class PoolManager(RequestMethods):
+         if "strict" in request_context:
+             warnings.warn(
+                 "The 'strict' parameter is no longer needed on Python 3+. "
+-                "This will raise an error in urllib3 v2.1.0.",
+-                DeprecationWarning,
++                "This will raise an error in urllib3 v3.0.",
++                FutureWarning,
+             )
+             request_context.pop("strict")
+ 
+@@ -436,10 +436,10 @@ class PoolManager(RequestMethods):
+         if u.scheme is None:
+             warnings.warn(
+                 "URLs without a scheme (ie 'https://') are deprecated and will raise an error "
+-                "in a future version of urllib3. To avoid this DeprecationWarning ensure all URLs "
++                "in urllib3 v3.0. To avoid this FutureWarning ensure all URLs "
+                 "start with 'https://' or 'http://'. Read more in this issue: "
+                 "https://github.com/urllib3/urllib3/issues/2920",
+-                category=DeprecationWarning,
++                category=FutureWarning,
+                 stacklevel=2,
+             )
+ 
+diff --git a/src/urllib3/util/ssl_.py b/src/urllib3/util/ssl_.py
+index 56fe9093..04742522 100644
+--- a/src/urllib3/util/ssl_.py
++++ b/src/urllib3/util/ssl_.py
+@@ -289,8 +289,8 @@ def create_urllib3_context(
+             # keep the maximum version to be it's default value: 'TLSVersion.MAXIMUM_SUPPORTED'
+             warnings.warn(
+                 "'ssl_version' option is deprecated and will be "
+-                "removed in urllib3 v2.6.0. Instead use 'ssl_minimum_version'",
+-                category=DeprecationWarning,
++                "removed in urllib3 v3.0. Instead use 'ssl_minimum_version'",
++                category=FutureWarning,
+                 stacklevel=2,
+             )
+ 
+diff --git a/test/test_exceptions.py b/test/test_exceptions.py
+index 081877b1..65041556 100644
+--- a/test/test_exceptions.py
++++ b/test/test_exceptions.py
+@@ -77,13 +77,13 @@ class TestFormat:
+ class TestNewConnectionError:
+     def test_pool_property_deprecation_warning(self) -> None:
+         err = NewConnectionError(HTTPConnection("localhost"), "test")
+-        with pytest.warns(DeprecationWarning) as records:
++        with pytest.warns(FutureWarning) as records:
+             err_pool = err.pool
+ 
+         assert err_pool is err.conn
+         msg = (
+             "The 'pool' property is deprecated and will be removed "
+-            "in urllib3 v2.1.0. Use 'conn' instead."
++            "in urllib3 v3.0. Use 'conn' instead."
+         )
+         record = records[0]
+         assert isinstance(record.message, Warning)
+diff --git a/test/test_fields.py b/test/test_fields.py
+index 8d36b147..e86f64c5 100644
+--- a/test/test_fields.py
++++ b/test/test_fields.py
+@@ -72,16 +72,16 @@ class TestRequestField:
+     def test_format_header_param_rfc2231_deprecated(
+         self, value: bytes | str, expect: str
+     ) -> None:
+-        with pytest.deprecated_call(match=r"urllib3 v2\.1\.0"):
++        with pytest.deprecated_call(match=r"urllib3 v3\.0"):
+             param = format_header_param_rfc2231("filename", value)
+ 
+         assert param == expect
+ 
+     def test_format_header_param_html5_deprecated(self) -> None:
+-        with pytest.deprecated_call(match=r"urllib3 v2\.1\.0"):
++        with pytest.deprecated_call(match=r"urllib3 v3\.0"):
+             param2 = format_header_param_html5("filename", "name")
+ 
+-        with pytest.deprecated_call(match=r"urllib3 v2\.1\.0"):
++        with pytest.deprecated_call(match=r"urllib3 v3\.0"):
+             param1 = format_header_param("filename", "name")
+ 
+         assert param1 == param2
+@@ -111,7 +111,7 @@ class TestRequestField:
+         assert cd == 'form-data; name="file"; filename="スキー旅行.txt"'
+ 
+     def test_from_tuples_rfc2231(self) -> None:
+-        with pytest.deprecated_call(match=r"urllib3 v2\.1\.0"):
++        with pytest.deprecated_call(match=r"urllib3 v3\.0"):
+             field = RequestField.from_tuples(
+                 "file", ("näme", "data"), header_formatter=format_header_param_rfc2231
+             )
+diff --git a/test/test_poolmanager.py b/test/test_poolmanager.py
+index b481a19d..3e1badf7 100644
+--- a/test/test_poolmanager.py
++++ b/test/test_poolmanager.py
+@@ -261,23 +261,23 @@ class TestPoolManager:
+ 
+     @patch("urllib3.poolmanager.PoolManager.connection_from_host")
+     def test_deprecated_no_scheme(self, connection_from_host: mock.MagicMock) -> None:
+-        # Don't actually make a network connection, just verify the DeprecationWarning
++        # Don't actually make a network connection, just verify the FutureWarning
+         connection_from_host.side_effect = ConnectionError("Not attempting connection")
+         p = PoolManager()
+ 
+-        with pytest.warns(DeprecationWarning) as records:
++        with pytest.warns(FutureWarning) as records:
+             with pytest.raises(ConnectionError):
+                 p.request(method="GET", url="evil.com://good.com")
+ 
+         msg = (
+             "URLs without a scheme (ie 'https://') are deprecated and will raise an error "
+-            "in a future version of urllib3. To avoid this DeprecationWarning ensure all URLs "
++            "in urllib3 v3.0. To avoid this FutureWarning ensure all URLs "
+             "start with 'https://' or 'http://'. Read more in this issue: "
+             "https://github.com/urllib3/urllib3/issues/2920"
+         )
+ 
+         assert len(records) == 1
+-        assert isinstance(records[0].message, DeprecationWarning)
++        assert isinstance(records[0].message, FutureWarning)
+         assert records[0].message.args[0] == msg
+ 
+     @patch("urllib3.poolmanager.PoolManager.connection_from_pool_key")
+@@ -291,12 +291,12 @@ class TestPoolManager:
+             "port": 8080,
+             "strict": True,
+         }
+-        with pytest.warns(DeprecationWarning) as records:
++        with pytest.warns(FutureWarning) as records:
+             p.connection_from_context(context)
+ 
+         msg = (
+             "The 'strict' parameter is no longer needed on Python 3+. "
+-            "This will raise an error in urllib3 v2.1.0."
++            "This will raise an error in urllib3 v3.0."
+         )
+         record = records[0]
+         assert isinstance(record.message, Warning)
+diff --git a/test/test_ssl.py b/test/test_ssl.py
+index 7c2377a4..6f024cb1 100644
+--- a/test/test_ssl.py
++++ b/test/test_ssl.py
+@@ -239,9 +239,9 @@ class TestSSL:
+         self, kwargs: dict[str, typing.Any]
+     ) -> None:
+         with pytest.warns(
+-            DeprecationWarning,
++            FutureWarning,
+             match=r"'ssl_version' option is deprecated and will be removed in "
+-            r"urllib3 v2\.6\.0\. Instead use 'ssl_minimum_version'",
++            r"urllib3 v3\.0\. Instead use 'ssl_minimum_version'",
+         ):
+             ssl_.create_urllib3_context(**kwargs)
+ 
+diff --git a/test/with_dummyserver/test_connectionpool.py b/test/with_dummyserver/test_connectionpool.py
+index 8d6107ae..e38967da 100644
+--- a/test/with_dummyserver/test_connectionpool.py
++++ b/test/with_dummyserver/test_connectionpool.py
+@@ -496,7 +496,7 @@ class TestConnectionPool(HypercornDummyServerTestCase):
+     def test_redirect_relative_url_no_deprecation(self) -> None:
+         with HTTPConnectionPool(self.host, self.port) as pool:
+             with warnings.catch_warnings():
+-                warnings.simplefilter("error", DeprecationWarning)
++                warnings.simplefilter("error", FutureWarning)
+                 pool.request("GET", "/redirect", fields={"target": "/"})
+ 
+     def test_redirect(self) -> None:
+@@ -1098,10 +1098,10 @@ class TestConnectionPool(HypercornDummyServerTestCase):
+         with HTTPConnectionPool(self.host, self.port) as pool:
+             conn = pool._get_conn()
+ 
+-            with pytest.warns(DeprecationWarning) as w:
++            with pytest.warns(FutureWarning) as w:
+                 conn.request_chunked("GET", "/headers")  # type: ignore[attr-defined]
+             assert len(w) == 1 and str(w[0].message) == (
+-                "HTTPConnection.request_chunked() is deprecated and will be removed in urllib3 v2.1.0. "
++                "HTTPConnection.request_chunked() is deprecated and will be removed in urllib3 v3.0. "
+                 "Instead use HTTPConnection.request(..., chunked=True)."
+             )
+ 
+diff --git a/test/with_dummyserver/test_https.py b/test/with_dummyserver/test_https.py
+index b1e0406c..0d7d87bb 100644
+--- a/test/with_dummyserver/test_https.py
++++ b/test/with_dummyserver/test_https.py
+@@ -761,9 +761,9 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+                 )
+             else:
+                 cmgr = pytest.warns(
+-                    DeprecationWarning,
++                    FutureWarning,
+                     match=r"'ssl_version' option is deprecated and will be removed "
+-                    r"in urllib3 v2\.6\.0\. Instead use 'ssl_minimum_version'",
++                    r"in urllib3 v3\.0\. Instead use 'ssl_minimum_version'",
+                 )
+             with cmgr:
+                 r = https_pool.request("GET", "/")
+@@ -771,11 +771,11 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+ 
+     def test_set_cert_default_cert_required(self) -> None:
+         conn = VerifiedHTTPSConnection(self.host, self.port)
+-        with pytest.warns(DeprecationWarning) as w:
++        with pytest.warns(FutureWarning) as w:
+             conn.set_cert()
+         assert conn.cert_reqs == ssl.CERT_REQUIRED
+         assert len(w) == 1 and str(w[0].message) == (
+-            "HTTPSConnection.set_cert() is deprecated and will be removed in urllib3 v2.1.0. "
++            "HTTPSConnection.set_cert() is deprecated and will be removed in urllib3 v3.0. "
+             "Instead provide the parameters to the HTTPSConnection constructor."
+         )
+ 
+@@ -787,7 +787,7 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+         assert ssl_context.verify_mode == verify_mode
+ 
+         conn = HTTPSConnection(self.host, self.port, ssl_context=ssl_context)
+-        with pytest.warns(DeprecationWarning) as w:
++        with pytest.warns(FutureWarning) as w:
+             conn.set_cert()
+ 
+         assert conn.cert_reqs == verify_mode
+@@ -795,7 +795,7 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+             conn.ssl_context is not None and conn.ssl_context.verify_mode == verify_mode
+         )
+         assert len(w) == 1 and str(w[0].message) == (
+-            "HTTPSConnection.set_cert() is deprecated and will be removed in urllib3 v2.1.0. "
++            "HTTPSConnection.set_cert() is deprecated and will be removed in urllib3 v3.0. "
+             "Instead provide the parameters to the HTTPSConnection constructor."
+         )
+ 
+@@ -828,16 +828,16 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+             self.host, self.port, ca_certs=DEFAULT_CA, ssl_version=self.ssl_version()
+         ) as https_pool:
+             with contextlib.closing(https_pool._get_conn()) as conn:
+-                with pytest.warns(DeprecationWarning) as w:
++                with pytest.warns(FutureWarning) as w:
+                     conn.connect()
+ 
+         assert len(w) >= 1
+-        assert any(x.category == DeprecationWarning for x in w)
++        assert any(x.category == FutureWarning for x in w)
+         assert any(
+             str(x.message)
+             == (
+                 "'ssl_version' option is deprecated and will be removed in "
+-                "urllib3 v2.6.0. Instead use 'ssl_minimum_version'"
++                "urllib3 v3.0. Instead use 'ssl_minimum_version'"
+             )
+             for x in w
+         )
+@@ -1142,9 +1142,9 @@ class BaseTestHTTPS(HTTPSHypercornDummyServerTestCase):
+             )
+ 
+         with pytest.warns(
+-            DeprecationWarning,
++            FutureWarning,
+             match=r"'ssl_version' option is deprecated and will be removed in "
+-            r"urllib3 v2\.6\.0\. Instead use 'ssl_minimum_version'",
++            r"urllib3 v3\.0\. Instead use 'ssl_minimum_version'",
+         ):
+             ctx = urllib3.util.ssl_.create_urllib3_context(
+                 ssl_version=self.ssl_version()

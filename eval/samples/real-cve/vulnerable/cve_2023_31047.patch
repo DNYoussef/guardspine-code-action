@@ -1,0 +1,200 @@
+diff --git a/django/forms/widgets.py b/django/forms/widgets.py
+index ab7c0f755f..b4a9583364 100644
+--- a/django/forms/widgets.py
++++ b/django/forms/widgets.py
+@@ -406,41 +406,17 @@ class MultipleHiddenInput(HiddenInput):
+ 
+ 
+ class FileInput(Input):
+-    allow_multiple_selected = False
+     input_type = "file"
+     needs_multipart_form = True
+     template_name = "django/forms/widgets/file.html"
+ 
+-    def __init__(self, attrs=None):
+-        if (
+-            attrs is not None
+-            and not self.allow_multiple_selected
+-            and attrs.get("multiple", False)
+-        ):
+-            raise ValueError(
+-                "%s doesn't support uploading multiple files."
+-                % self.__class__.__qualname__
+-            )
+-        if self.allow_multiple_selected:
+-            if attrs is None:
+-                attrs = {"multiple": True}
+-            else:
+-                attrs.setdefault("multiple", True)
+-        super().__init__(attrs)
+-
+     def format_value(self, value):
+         """File input never renders a value."""
+         return
+ 
+     def value_from_datadict(self, data, files, name):
+         "File widgets take data from FILES, not POST"
+-        getter = files.get
+-        if self.allow_multiple_selected:
+-            try:
+-                getter = files.getlist
+-            except AttributeError:
+-                pass
+-        return getter(name)
++        return files.get(name)
+ 
+     def value_omitted_from_data(self, data, files, name):
+         return name not in files
+diff --git a/tests/forms_tests/field_tests/test_filefield.py b/tests/forms_tests/field_tests/test_filefield.py
+index 00c74a7c1a..56aaa311e0 100644
+--- a/tests/forms_tests/field_tests/test_filefield.py
++++ b/tests/forms_tests/field_tests/test_filefield.py
+@@ -2,8 +2,7 @@ import pickle
+ 
+ from django.core.exceptions import ValidationError
+ from django.core.files.uploadedfile import SimpleUploadedFile
+-from django.core.validators import validate_image_file_extension
+-from django.forms import FileField, FileInput
++from django.forms import FileField
+ from django.test import SimpleTestCase
+ 
+ 
+@@ -110,68 +109,3 @@ class FileFieldTest(SimpleTestCase):
+ 
+     def test_file_picklable(self):
+         self.assertIsInstance(pickle.loads(pickle.dumps(FileField())), FileField)
+-
+-
+-class MultipleFileInput(FileInput):
+-    allow_multiple_selected = True
+-
+-
+-class MultipleFileField(FileField):
+-    def __init__(self, *args, **kwargs):
+-        kwargs.setdefault("widget", MultipleFileInput())
+-        super().__init__(*args, **kwargs)
+-
+-    def clean(self, data, initial=None):
+-        single_file_clean = super().clean
+-        if isinstance(data, (list, tuple)):
+-            result = [single_file_clean(d, initial) for d in data]
+-        else:
+-            result = single_file_clean(data, initial)
+-        return result
+-
+-
+-class MultipleFileFieldTest(SimpleTestCase):
+-    def test_file_multiple(self):
+-        f = MultipleFileField()
+-        files = [
+-            SimpleUploadedFile("name1", b"Content 1"),
+-            SimpleUploadedFile("name2", b"Content 2"),
+-        ]
+-        self.assertEqual(f.clean(files), files)
+-
+-    def test_file_multiple_empty(self):
+-        f = MultipleFileField()
+-        files = [
+-            SimpleUploadedFile("empty", b""),
+-            SimpleUploadedFile("nonempty", b"Some Content"),
+-        ]
+-        msg = "'The submitted file is empty.'"
+-        with self.assertRaisesMessage(ValidationError, msg):
+-            f.clean(files)
+-        with self.assertRaisesMessage(ValidationError, msg):
+-            f.clean(files[::-1])
+-
+-    def test_file_multiple_validation(self):
+-        f = MultipleFileField(validators=[validate_image_file_extension])
+-
+-        good_files = [
+-            SimpleUploadedFile("image1.jpg", b"fake JPEG"),
+-            SimpleUploadedFile("image2.png", b"faux image"),
+-            SimpleUploadedFile("image3.bmp", b"fraudulent bitmap"),
+-        ]
+-        self.assertEqual(f.clean(good_files), good_files)
+-
+-        evil_files = [
+-            SimpleUploadedFile("image1.sh", b"#!/bin/bash -c 'echo pwned!'\n"),
+-            SimpleUploadedFile("image2.png", b"faux image"),
+-            SimpleUploadedFile("image3.jpg", b"fake JPEG"),
+-        ]
+-
+-        evil_rotations = (
+-            evil_files[i:] + evil_files[:i]  # Rotate by i.
+-            for i in range(len(evil_files))
+-        )
+-        msg = "File extension “sh” is not allowed. Allowed extensions are: "
+-        for rotated_evil_files in evil_rotations:
+-            with self.assertRaisesMessage(ValidationError, msg):
+-                f.clean(rotated_evil_files)
+diff --git a/tests/forms_tests/widget_tests/test_clearablefileinput.py b/tests/forms_tests/widget_tests/test_clearablefileinput.py
+index 53b84cc0ec..8d5f0c5f98 100644
+--- a/tests/forms_tests/widget_tests/test_clearablefileinput.py
++++ b/tests/forms_tests/widget_tests/test_clearablefileinput.py
+@@ -245,8 +245,3 @@ class ClearableFileInputTest(WidgetTest):
+             '<input type="file" name="clearable_file" id="id_clearable_file"></div>',
+             form.render(),
+         )
+-
+-    def test_multiple_error(self):
+-        msg = "ClearableFileInput doesn't support uploading multiple files."
+-        with self.assertRaisesMessage(ValueError, msg):
+-            ClearableFileInput(attrs={"multiple": True})
+diff --git a/tests/forms_tests/widget_tests/test_fileinput.py b/tests/forms_tests/widget_tests/test_fileinput.py
+index a49f481728..ea73e577ce 100644
+--- a/tests/forms_tests/widget_tests/test_fileinput.py
++++ b/tests/forms_tests/widget_tests/test_fileinput.py
+@@ -1,6 +1,4 @@
+-from django.core.files.uploadedfile import SimpleUploadedFile
+ from django.forms import FileField, FileInput, Form
+-from django.utils.datastructures import MultiValueDict
+ 
+ from .base import WidgetTest
+ 
+@@ -50,45 +48,3 @@ class FileInputTest(WidgetTest):
+             'name="field" required type="file"></div>',
+             form.render(),
+         )
+-
+-    def test_multiple_error(self):
+-        msg = "FileInput doesn't support uploading multiple files."
+-        with self.assertRaisesMessage(ValueError, msg):
+-            FileInput(attrs={"multiple": True})
+-
+-    def test_value_from_datadict_multiple(self):
+-        class MultipleFileInput(FileInput):
+-            allow_multiple_selected = True
+-
+-        file_1 = SimpleUploadedFile("something1.txt", b"content 1")
+-        file_2 = SimpleUploadedFile("something2.txt", b"content 2")
+-        # Uploading multiple files is allowed.
+-        widget = MultipleFileInput(attrs={"multiple": True})
+-        value = widget.value_from_datadict(
+-            data={"name": "Test name"},
+-            files=MultiValueDict({"myfile": [file_1, file_2]}),
+-            name="myfile",
+-        )
+-        self.assertEqual(value, [file_1, file_2])
+-        # Uploading multiple files is not allowed.
+-        widget = FileInput()
+-        value = widget.value_from_datadict(
+-            data={"name": "Test name"},
+-            files=MultiValueDict({"myfile": [file_1, file_2]}),
+-            name="myfile",
+-        )
+-        self.assertEqual(value, file_2)
+-
+-    def test_multiple_default(self):
+-        class MultipleFileInput(FileInput):
+-            allow_multiple_selected = True
+-
+-        tests = [
+-            (None, True),
+-            ({"class": "myclass"}, True),
+-            ({"multiple": False}, False),
+-        ]
+-        for attrs, expected in tests:
+-            with self.subTest(attrs=attrs):
+-                widget = MultipleFileInput(attrs=attrs)
+-                self.assertIs(widget.attrs["multiple"], expected)

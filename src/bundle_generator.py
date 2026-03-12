@@ -121,6 +121,20 @@ class BundleGenerator:
         pii_shield = analysis.get("pii_shield", {"enabled": False})
         sanitization = analysis.get("sanitization")
 
+        # Extract per-model provenance for sealing into the hash chain.
+        mmr = analysis.get("multi_model_review") or {}
+        reviews_sealed = [
+            {
+                "model_name": r.get("model_name", ""),
+                "provider": r.get("provider", ""),
+                "model_id": r.get("model_id", r.get("model_name", "")),
+                "prompt_hash": r.get("prompt_hash", ""),
+                "response_hash": r.get("response_hash", ""),
+            }
+            for r in (mmr.get("reviews") or [])
+            if not r.get("error")
+        ]
+
         # Event 2: Analysis Completed
         analysis_event = BundleEvent(
             event_type="analysis_completed",
@@ -136,6 +150,7 @@ class BundleGenerator:
                 "analysis_diff_hash": analysis_diff_hash,
                 "pii_shield": pii_shield,
                 "sanitization": sanitization,
+                "reviews_sealed": reviews_sealed,
             }
         )
         previous_hash = analysis_event.compute_hash(previous_hash)
@@ -211,6 +226,11 @@ class BundleGenerator:
                 "lines_removed": analysis.get("lines_removed", 0),
                 "sensitive_zones": self._summarize_zones(analysis.get("sensitive_zones", [])),
                 "ai_summary": analysis.get("ai_summary", {}),
+                "multi_model_review": self._redact_review(analysis.get("multi_model_review") or {}),
+                "preliminary_tier": analysis.get("preliminary_tier", ""),
+                "models_used": analysis.get("models_used", 0),
+                "models_failed": analysis.get("models_failed", 0),
+                "model_errors": analysis.get("model_errors", []),
                 "raw_diff_hash": raw_diff_hash,
                 "analysis_diff_hash": analysis_diff_hash,
                 "pii_shield": pii_shield,
@@ -259,6 +279,20 @@ class BundleGenerator:
             summary[zone_type]["files"] = sorted(summary[zone_type]["files"])
 
         return summary
+
+    @staticmethod
+    def _redact_review(mmr: dict) -> dict:
+        """Strip raw_response from review dicts to avoid leaking diff content."""
+        if not mmr:
+            return mmr
+        redacted = dict(mmr)
+        reviews = redacted.get("reviews")
+        if isinstance(reviews, list):
+            redacted["reviews"] = [
+                {k: v for k, v in r.items() if k != "raw_response"}
+                for r in reviews
+            ]
+        return redacted
 
     def _build_v020_items(self) -> list[dict[str, Any]]:
         """Map legacy events into v0.2.0 bundle item records."""

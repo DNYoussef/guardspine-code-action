@@ -1,0 +1,48 @@
+diff --git a/README.rst b/README.rst
+index ef7b8ec..5312972 100644
+--- a/README.rst
++++ b/README.rst
+@@ -19,11 +19,11 @@
+ Welcome to Paramiko!
+ ====================
+ 
+-Paramiko is a pure-Python [#]_ (3.6+) implementation of the SSHv2 protocol
+-[#]_, providing both client and server functionality. It provides the
+-foundation for the high-level SSH library `Fabric <https://fabfile.org>`_,
+-which is what we recommend you use for common client use-cases such as running
+-remote shell commands or transferring files.
++Paramiko is a pure-Python [#]_ implementation of the SSHv2 protocol [#]_,
++providing both client and server functionality. It provides the foundation for
++the high-level SSH library `Fabric <https://fabfile.org>`_, which is what we
++recommend you use for common client use-cases such as running remote shell
++commands or transferring files.
+ 
+ Direct use of Paramiko itself is only intended for users who need
+ advanced/low-level primitives or want to run an in-Python sshd.
+diff --git a/sites/shared_conf.py b/sites/shared_conf.py
+index 5e85def..4e64eef 100644
+--- a/sites/shared_conf.py
++++ b/sites/shared_conf.py
+@@ -21,7 +21,7 @@ html_sidebars = {
+ }
+ 
+ # Everything intersphinx's to Python
+-intersphinx_mapping = {"python": ("https://docs.python.org/3.6/", None)}
++intersphinx_mapping = {"python": ("https://docs.python.org/3/", None)}
+ 
+ # Regular settings
+ project = "Paramiko"
+diff --git a/sites/www/installing.rst b/sites/www/installing.rst
+index 98c0655..4931fe4 100644
+--- a/sites/www/installing.rst
++++ b/sites/www/installing.rst
+@@ -19,9 +19,6 @@ via `pip <http://pip-installer.org>`_::
+ 
+     $ pip install paramiko
+ 
+-We currently support **Python 3.6+ only**. Users on older interpreter versions
+-are urged to upgrade.
+-
+ Paramiko has only a few **direct dependencies**:
+ 
+ - The big one, with its own sub-dependencies, is Cryptography; see :ref:`its

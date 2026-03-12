@@ -1,0 +1,13 @@
+diff --git a/requirements.txt b/requirements.txt
+index 85e16aa6..e496bc72 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -32,7 +32,7 @@ docutils==0.21.2
+     # via
+     #   sphinx
+     #   sphinx-rtd-theme
+-filelock==3.20.1
++filelock==3.20.3
+     # via
+     #   tox
+     #   virtualenv

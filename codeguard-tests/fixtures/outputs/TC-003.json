@@ -1,0 +1,48 @@
+{
+  "detected": true,
+  "risk_level": 4,
+  "signals": ["memcpy", "user_controlled_length", "no_bounds_check", "tls_heartbeat", "buffer_overread"],
+  "categories": ["memory_safety"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "summary": "memcpy uses wire-supplied payload length without bounds validation in TLS heartbeat handler",
+      "evidence": ["memcpy(bp, pl, payload);  /* BUG: payload from wire, not bounds-checked */"],
+      "file_paths": ["ssl/d1_both.c"],
+      "remediation": "Validate payload length against actual record length: if (1 + 2 + payload + padding > s->s3->rrec.length) return 0;"
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 4,
+        "signals": ["memcpy", "user_controlled_length", "buffer_overread"],
+        "findings": ["F1"]
+      },
+      "gpt-4o": {
+        "risk_level": 4,
+        "signals": ["no_bounds_check", "tls_heartbeat", "memcpy"],
+        "findings": ["F1"]
+      },
+      "gemini-2.0-flash": {
+        "risk_level": 3,
+        "signals": ["memcpy", "buffer_overread"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 4, "accepted": ["F1"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 4, "accepted": ["F1"], "rejected": [], "added": []},
+      "gemini-2.0-flash": {"risk_level": 4, "accepted": ["F1"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 4,
+      "signals": ["memcpy", "user_controlled_length", "no_bounds_check", "tls_heartbeat", "buffer_overread"],
+      "findings": ["F1"],
+      "human_required": true
+    }
+  }
+}

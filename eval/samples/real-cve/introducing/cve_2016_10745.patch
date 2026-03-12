@@ -1,0 +1,209 @@
+diff --git a/jinja2/environment.py b/jinja2/environment.py
+index 23e77b6d..4134103e 100644
+--- a/jinja2/environment.py
++++ b/jinja2/environment.py
+@@ -293,11 +293,13 @@ class Environment(object):
+             exc_type, exc_value, tb = translate_syntax_error(e)
+             raise exc_type, exc_value, tb
+ 
+-    def lex(self, source, name=None):
++    def lex(self, source, filename=None):
+         """Lex the given sourcecode and return a generator that yields
+         tokens as tuples in the form ``(lineno, token_type, value)``.
++        This can be useful for :ref:`extension development <writing-extensions>`
++        and debugging templates.
+         """
+-        return self.lexer.tokeniter(source, name)
++        return self.lexer.tokeniter(source, filename)
+ 
+     def compile(self, source, name=None, filename=None, globals=None,
+                 raw=False):
+diff --git a/jinja2/exceptions.py b/jinja2/exceptions.py
+index e5b156b9..26539526 100644
+--- a/jinja2/exceptions.py
++++ b/jinja2/exceptions.py
+@@ -18,6 +18,12 @@ class UndefinedError(TemplateError):
+     """Raised if a template tries to operate on :class:`Undefined`."""
+ 
+ 
++class SecurityError(TemplateError):
++    """Raised if a template tries to do something insecure if the
++    sandbox is enabled.
++    """
++
++
+ class TemplateNotFound(IOError, LookupError, TemplateError):
+     """Raised if a template does not exist."""
+ 
+diff --git a/jinja2/runtime.py b/jinja2/runtime.py
+index 829de41d..8fb3f0b7 100644
+--- a/jinja2/runtime.py
++++ b/jinja2/runtime.py
+@@ -306,7 +306,7 @@ def fail_with_undefined_error(self, *args, **kwargs):
+             )
+     else:
+         hint = self._undefined_hint
+-    raise UndefinedError(hint)
++    raise self._undefined_exception(hint)
+ 
+ 
+ class Undefined(object):
+@@ -323,12 +323,14 @@ class Undefined(object):
+       ...
+     jinja2.exceptions.UndefinedError: 'foo' is undefined
+     """
+-    __slots__ = ('_undefined_hint', '_undefined_obj', '_undefined_name')
++    __slots__ = ('_undefined_hint', '_undefined_obj', '_undefined_name',
++                 '_undefined_exception')
+ 
+-    def __init__(self, hint=None, obj=None, name=None):
++    def __init__(self, hint=None, obj=None, name=None, exc=UndefinedError):
+         self._undefined_hint = hint
+         self._undefined_obj = obj
+         self._undefined_name = name
++        self._undefined_exception = exc
+ 
+     __add__ = __radd__ = __mul__ = __rmul__ = __div__ = __rdiv__ = \
+     __realdiv__ = __rrealdiv__ = __floordiv__ = __rfloordiv__ = \
+diff --git a/jinja2/sandbox.py b/jinja2/sandbox.py
+index e0273019..4b9ac138 100644
+--- a/jinja2/sandbox.py
++++ b/jinja2/sandbox.py
+@@ -16,6 +16,7 @@ from types import FunctionType, MethodType, TracebackType, CodeType, \
+      FrameType, GeneratorType
+ from jinja2.runtime import Undefined
+ from jinja2.environment import Environment
++from jinja2.exceptions import SecurityError
+ 
+ 
+ #: maximum number of items a range may produce
+@@ -41,13 +42,55 @@ def safe_range(*args):
+ 
+ 
+ def unsafe(f):
+-    """Mark a function as unsafe."""
++    """
++    Mark a function or method as unsafe::
++
++        @unsafe
++        def delete(self):
++            pass
++    """
+     f.unsafe_callable = True
+     return f
+ 
+ 
++def is_internal_attribute(obj, attr):
++    """Test if the attribute given is an internal python attribute.  For
++    example this function returns `True` for the `func_code` attribute of
++    python objects.  This is useful if the environment method
++    :meth:`~SandboxedEnvironment.is_safe_attribute` is overriden.
++
++    >>> from jinja2.sandbox import is_internal_attribute
++    >>> is_internal_attribute(lambda: None, "func_code")
++    True
++    >>> is_internal_attribute((lambda x:x).func_code, 'co_code')
++    True
++    >>> is_internal_attribute(str, "upper")
++    False
++    """
++    if isinstance(obj, FunctionType):
++        return attr in UNSAFE_FUNCTION_ATTRIBUTES
++    if isinstance(obj, MethodType):
++        return attr in UNSAFE_FUNCTION_ATTRIBUTES or \
++               attr in UNSAFE_METHOD_ATTRIBUTES
++    if isinstance(obj, type):
++        return attr == 'mro'
++    if isinstance(obj, (CodeType, TracebackType, FrameType)):
++        return True
++    if isinstance(obj, GeneratorType):
++        return attr == 'gi_frame'
++    return attr.startswith('__')
++
++
+ class SandboxedEnvironment(Environment):
+-    """The sandboxed environment"""
++    """The sandboxed environment.  It works like the regular environment but
++    tells the compiler to generate sandboxed code.  Additionally subclasses of
++    this environment may override the methods that tell the runtime what
++    attributes or functions are safe to access.
++
++    If the template tries to access insecure code a :exc:`SecurityError` is
++    raised.  However also other exceptions may occour during the rendering so
++    the caller has to ensure that all exceptions are catched.
++    """
+     sandboxed = True
+ 
+     def __init__(self, *args, **kwargs):
+@@ -58,22 +101,10 @@ class SandboxedEnvironment(Environment):
+         """The sandboxed environment will call this method to check if the
+         attribute of an object is safe to access.  Per default all attributes
+         starting with an underscore are considered private as well as the
+-        special attributes of functions and methods.
++        special attributes of internal python objects as returned by the
++        :func:`is_internal_attribute` function.
+         """
+-        if attr.startswith('_'):
+-            return False
+-        if isinstance(obj, FunctionType):
+-            return attr not in UNSAFE_FUNCTION_ATTRIBUTES
+-        if isinstance(obj, MethodType):
+-            return attr not in UNSAFE_FUNCTION_ATTRIBUTES and \
+-                   attr not in UNSAFE_METHOD_ATTRIBUTES
+-        if isinstance(obj, type):
+-            return attr != 'mro'
+-        if isinstance(obj, (CodeType, TracebackType, FrameType)):
+-            return False
+-        if isinstance(obj, GeneratorType):
+-            return attr != 'gi_frame'
+-        return True
++        return not (attr.startswith('_') or is_internal_attribute(obj, attr))
+ 
+     def is_safe_callable(self, obj):
+         """Check if an object is safely callable.  Per default a function is
+@@ -103,7 +134,7 @@ class SandboxedEnvironment(Environment):
+                                       ' unsafe.' % (
+                     argument,
+                     obj.__class__.__name__
+-                ), name=argument)
++                ), name=argument, exc=SecurityError)
+         return self.undefined(obj=obj, name=argument)
+ 
+     def call(__self, __obj, *args, **kwargs):
+@@ -111,5 +142,5 @@ class SandboxedEnvironment(Environment):
+         # the double prefixes are to avoid double keyword argument
+         # errors when proxying the call.
+         if not __self.is_safe_callable(__obj):
+-            raise TypeError('%r is not safely callable' % (__obj,))
++            raise SecurityError('%r is not safely callable' % (__obj,))
+         return __obj(*args, **kwargs)
+diff --git a/tests/test_security.py b/tests/test_security.py
+index 331e8b97..803c5e7f 100644
+--- a/tests/test_security.py
++++ b/tests/test_security.py
+@@ -35,14 +35,14 @@ test_unsafe = '''
+ >>> env.from_string("{{ foo.foo() }}").render(foo=MODULE.PrivateStuff())
+ Traceback (most recent call last):
+     ...
+-TypeError: <bound method PrivateStuff.foo of PrivateStuff> is not safely callable
++SecurityError: <bound method PrivateStuff.foo of PrivateStuff> is not safely callable
+ >>> env.from_string("{{ foo.bar() }}").render(foo=MODULE.PrivateStuff())
+ u'23'
+ 
+ >>> env.from_string("{{ foo._foo() }}").render(foo=MODULE.PublicStuff())
+ Traceback (most recent call last):
+     ...
+-UndefinedError: access to attribute '_foo' of 'PublicStuff' object is unsafe.
++SecurityError: access to attribute '_foo' of 'PublicStuff' object is unsafe.
+ >>> env.from_string("{{ foo.bar() }}").render(foo=MODULE.PublicStuff())
+ u'23'
+ 
+@@ -53,7 +53,7 @@ u''
+ >>> env.from_string("{{ foo.__class__.__subclasses__() }}").render(foo=42)
+ Traceback (most recent call last):
+     ...
+-UndefinedError: access to attribute '__class__' of 'int' object is unsafe.
++SecurityError: access to attribute '__class__' of 'int' object is unsafe.
+ '''
+ 
+ 

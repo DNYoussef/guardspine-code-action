@@ -1,0 +1,42 @@
+{
+  "detected": true,
+  "risk_level": 3,
+  "signals": ["new_dependency", "flatmap-stream", "behavior_change", "unknown_package"],
+  "categories": ["dependency_hijack", "supply_chain"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "summary": "New unknown dependency flatmap-stream added with behavioral change to data pipeline",
+      "evidence": ["\"flatmap-stream\": \"^0.1.1\"", "flatmap(result, function(chunk) {"],
+      "file_paths": ["package.json", "index.js"],
+      "remediation": "Audit flatmap-stream package for malicious code. Verify npm registry ownership. Prefer well-known maintained packages."
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 3,
+        "signals": ["new_dependency", "behavior_change"],
+        "findings": ["F1"]
+      },
+      "gpt-4o": {
+        "risk_level": 3,
+        "signals": ["unknown_package", "flatmap-stream", "supply_chain"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 3, "accepted": ["F1"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 3, "accepted": ["F1"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 3,
+      "signals": ["new_dependency", "flatmap-stream", "behavior_change", "unknown_package"],
+      "findings": ["F1"],
+      "human_required": false
+    }
+  }
+}

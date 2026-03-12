@@ -11,6 +11,7 @@ Architecture:
 
 import re
 import json
+import hashlib
 import concurrent.futures
 from typing import Any, Optional
 from dataclasses import dataclass, field, fields as dataclass_fields
@@ -148,6 +149,31 @@ class DiffAnalyzer:
         "xss": r"(<script|<img\s|onerror|onload|innerHTML|\.html\(|document\.write|mark_safe|Markup\(|\bResponse\s*\(.*<)",
     }
 
+    # Lines matching this pattern are hash-field assignments (content_hash,
+    # bundle_hash, chain_hash, etc.) with SHA-256 hex values. These are
+    # content-addressable identifiers used in evidence bundles, NOT secrets
+    # or cryptographic operations.  When a line matches this pattern, the
+    # "crypto" zone is suppressed to avoid false positives.
+    _HASH_FIELD_RE = re.compile(
+        r"""
+        \b\w*_hash\b          # field name ending in _hash
+        .{0,20}               # up to 20 chars of assignment syntax
+        ["\']?                 # optional quote
+        (?:sha256:)?           # optional sha256: prefix
+        [0-9a-fA-F]{64}       # 64-char hex string (SHA-256)
+        ["\']?                 # optional closing quote
+        """,
+        re.VERBOSE,
+    )
+
+    # Documentation files should not trigger sensitive-zone detection.
+    # README mentions of "auth", "encrypt", etc. are descriptions, not code.
+    # Matches L0 patterns from FILE_PATTERNS above.
+    _DOC_FILE_RE = re.compile(
+        r"(?:\.md|\.txt|\.rst)$|(?:^|/)(?:README|LICENSE|CHANGELOG|CONTRIBUTING)",
+        re.IGNORECASE,
+    )
+
     # File patterns for preliminary risk tier estimation
     FILE_PATTERNS = {
         "L0": [r"\.md$", r"\.txt$", r"\.rst$", r"LICENSE", r"CHANGELOG", r"README", r"\.gitignore$"],
@@ -170,7 +196,7 @@ class DiffAnalyzer:
     DEFAULT_MODELS = {
         # OpenRouter models (recommended - single API for multiple providers)
         "openrouter": [
-            "anthropic/claude-4.5-sonnet",
+            "anthropic/claude-sonnet-4.5",
             "openai/gpt-5.2",
             "google/gemini-2.5-flash",
         ],
@@ -180,9 +206,9 @@ class DiffAnalyzer:
             "mistral-large",
             "codellama-70b",
         ],
-        # Direct API models
-        "anthropic": ["claude-4.5-haiku"],
-        "openai": ["gpt-5.2-mini"],
+        # Direct API models (not OpenRouter format -- no provider/ prefix)
+        "anthropic": ["claude-haiku-4-5-20251001"],
+        "openai": ["gpt-4.1-mini"],
     }
 
     def __init__(
@@ -229,7 +255,7 @@ class DiffAnalyzer:
         self.openai_key = openai_key
         self.anthropic_key = anthropic_key
         self.openrouter_key = openrouter_key
-        self.openrouter_model = openrouter_model or "anthropic/claude-sonnet-4"
+        self.openrouter_model = openrouter_model or "anthropic/claude-sonnet-4.5"
         self.ollama_host = ollama_host
         self.ollama_model = ollama_model or "llama3.3"
         self.ai_review_enabled = ai_review
@@ -272,10 +298,18 @@ class DiffAnalyzer:
         Parse a model specification into (provider, model).
 
         Formats:
-          "provider/model" -> ("provider", "model")
+          "anthropic/claude-sonnet-4.5" -> ("openrouter", "anthropic/claude-sonnet-4.5")
+              when openrouter_key is set (OpenRouter model IDs use provider/model format)
+          "claude-haiku-4-5-20251001" -> ("anthropic", "claude-haiku-4-5-20251001")
+              when anthropic_key is set (direct API model IDs have no slash)
           "model" -> inferred provider based on available keys
         """
         if "/" in model_spec:
+            # Model IDs with slashes are OpenRouter format (e.g. "anthropic/claude-sonnet-4.5").
+            # Route through OpenRouter when available; fall back to direct API only if
+            # the user has that provider's key but not OpenRouter.
+            if self.openrouter_key:
+                return ("openrouter", model_spec)
             parts = model_spec.split("/", 1)
             return (parts[0], parts[1])
 
@@ -363,6 +397,10 @@ class DiffAnalyzer:
                 is_new=patched_file.is_added_file,
                 is_deleted=patched_file.is_removed_file,
             )
+            # Doc files (README, .md, .txt, etc.) should not trigger
+            # sensitive-zone alerts -- keyword mentions are descriptive,
+            # not executable code (R2: eliminate special cases).
+            is_doc_file = bool(self._DOC_FILE_RE.search(patched_file.path))
 
             # Extract hunks
             for hunk in patched_file:
@@ -385,8 +423,14 @@ class DiffAnalyzer:
                     # Check for sensitive patterns on introduced lines only.
                     # Removed lines are remediation context and should not
                     # trigger new-risk findings.
-                    if line.is_added:
+                    if line.is_added and not is_doc_file:
+                        # Pre-check: is this a hash-field assignment?
+                        # If so, suppress the "crypto" zone (R2: no special cases).
+                        is_hash_field = bool(self._HASH_FIELD_RE.search(line.value))
+
                         for zone_name, pattern in self.SENSITIVE_PATTERNS.items():
+                            if is_hash_field and zone_name == "crypto":
+                                continue
                             if re.search(pattern, line.value, re.IGNORECASE):
                                 # When a sanitized diff is available, redact
                                 # the preview to avoid leaking raw PII.
@@ -669,6 +713,7 @@ class DiffAnalyzer:
         models' previous-round findings but NOT the current round's, so all
         models in a round can execute concurrently."""
         reviews: list[dict | None] = [None] * len(providers)
+        prompt_hashes: dict[int, str] = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(providers)) as ex:
             future_to_idx = {}
             for i, (provider, model) in enumerate(providers):
@@ -676,6 +721,7 @@ class DiffAnalyzer:
                 others = [r for j, r in enumerate(prev_reviews) if j != i]
                 prompt = self._build_crosscheck_prompt(
                     diff_content, own, others, round_num)
+                prompt_hashes[i] = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
                 future_to_idx[ex.submit(
                     self._call_provider, provider, model, prompt
                 )] = (i, provider, model)
@@ -683,15 +729,20 @@ class DiffAnalyzer:
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx, provider, model = future_to_idx[future]
                 try:
-                    raw = future.result()
+                    raw, meta = future.result()
                     parsed = self._parse_review_response(raw)
                     parsed["model_name"] = model
                     parsed["provider"] = provider
+                    parsed["model_id"] = meta.get("model_id", model)
+                    parsed["prompt_hash"] = prompt_hashes[idx]
+                    parsed["response_hash"] = f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
                     parsed["raw_response"] = raw[:500]
                     reviews[idx] = parsed
                 except Exception as e:
                     reviews[idx] = {
                         "model_name": model, "provider": provider,
+                        "model_id": model, "prompt_hash": prompt_hashes.get(idx, ""),
+                        "response_hash": "",
                         "error": str(e), "summary": "", "intent": "",
                         "concerns": [], "risk_assessment": "error",
                         "confidence": 0.0, "rubric_scores": {},
@@ -745,8 +796,8 @@ Respond with JSON only:
         avg_conf = sum(r.get("confidence", 0) for r in valid) / len(valid)
         return avg_conf >= 0.85
 
-    def _call_provider(self, provider: str, model: str, prompt: str) -> str:
-        """Dispatch a prompt to the appropriate provider and return raw text."""
+    def _call_provider(self, provider: str, model: str, prompt: str) -> tuple[str, dict]:
+        """Dispatch a prompt to the appropriate provider and return (text, metadata)."""
         if provider == "ollama":
             return self._call_ollama(prompt, model)
         elif provider == "openrouter":
@@ -791,23 +842,18 @@ Respond with JSON only:
     ) -> dict:
         """Get a single model's review of the diff."""
         prompt = self._build_review_prompt(diff_content, sensitive_zones, rubric, use_rubric)
+        prompt_hash = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
 
         try:
-            if provider == "ollama":
-                response = self._call_ollama(prompt, model)
-            elif provider == "openrouter":
-                response = self._call_openrouter(prompt, model)
-            elif provider == "anthropic":
-                response = self._call_anthropic(prompt, model)
-            elif provider == "openai":
-                response = self._call_openai(prompt, model)
-            else:
-                return {"error": f"Unknown provider: {provider}"}
+            response, meta = self._call_provider(provider, model, prompt)
 
             # Parse response
             parsed = self._parse_review_response(response)
             parsed["model_name"] = model
             parsed["provider"] = provider
+            parsed["model_id"] = meta.get("model_id", model)
+            parsed["prompt_hash"] = prompt_hash
+            parsed["response_hash"] = f"sha256:{hashlib.sha256(response.encode('utf-8')).hexdigest()}"
             parsed["raw_response"] = response[:500]  # Truncate for storage
             return parsed
 
@@ -815,6 +861,9 @@ Respond with JSON only:
             return {
                 "model_name": model,
                 "provider": provider,
+                "model_id": model,
+                "prompt_hash": prompt_hash,
+                "response_hash": "",
                 "error": str(e),
                 "summary": "",
                 "intent": "",
@@ -846,33 +895,46 @@ For {rubric.upper()} compliance, evaluate:
 Include rubric_scores in your JSON response.
 """
 
-        return f"""You are a senior security engineer triaging a code diff. Your job is to distinguish SAFE code from DANGEROUS code. Most code is safe. Only flag code that is actually exploitable.
+        return f"""You are a senior security engineer reviewing a code diff for vulnerabilities. Your job is to catch security regressions -- code changes that weaken defenses, remove validation, or introduce exploitable flaws.
 
 ## Decision Criteria
 
-**approve** - Use this when:
-- Code uses parameterized queries (?, %s, :name placeholders) even if it touches SQL
-- Code uses safe crypto (bcrypt, argon2, scrypt, AES-256, secrets module) even if it touches crypto
-- Code reads credentials from env vars, vaults, keyrings, config files (not hardcoded)
-- Code uses subprocess with list args (no shell=True), shlex.quote, or allowlists
-- Code uses safe deserialization (json.loads, dataclasses, msgpack, yaml.safe_load)
-- Code uses path sanitization (os.path.basename, Path.resolve, allowlists)
-- Code uses template engines with autoescaping (Jinja2 default, Django templates)
-- Code is tests, docs, or configuration only
+**approve** - Code is safe:
+- Uses parameterized queries, safe crypto, safe deserialization
+- Reads credentials from env/vaults (not hardcoded)
+- Tests, docs, or configuration only
+- Adds or strengthens security checks
 
-**request_changes** - Use this ONLY when code has an actual exploitable vulnerability:
+**request_changes** - Code introduces or exposes a vulnerability:
 - Unsanitized user input in SQL, commands, templates, or file paths
-- Hardcoded secrets, API keys, passwords as string literals in source
-- Dangerous deserialization of untrusted input (pickle, yaml.load without SafeLoader)
+- Hardcoded secrets, API keys, passwords in source
+- Dangerous deserialization (pickle, yaml.load without SafeLoader)
 - Disabled security features (shell=True with user input, autoescaping off)
-- Weak crypto for security purposes (MD5/SHA1 for passwords, random.random for tokens)
+- Weak crypto for security (MD5/SHA1 for passwords, random for tokens)
+- Removing or weakening existing input validation or sanitization
+- Missing or bypassed authentication/authorization checks
+- Race conditions in security-critical operations (file permissions, auth state)
+- Regex patterns vulnerable to ReDoS (catastrophic backtracking)
+- Algorithmic complexity allowing denial of service (unbounded loops on user input)
+- Relaxed or removed TLS/certificate validation
+- Sandbox or isolation escapes (format string abuse, template injection)
+- Open redirect via unvalidated URL parameters
+- HTTP request smuggling via relaxed parsing or removed checks
+- Removing guards, assertions, or boundary checks from security-sensitive code
 
-**comment** - Use when code is neither clearly safe nor clearly dangerous
+**comment** - Code is suspicious but you are not certain it is exploitable.
+List your specific concerns in the concerns array.
+
+## Key Principle
+
+Pay special attention to REMOVED code. If the diff removes validation,
+sanitization, auth checks, or tightens parsing -- that is a regression.
+A diff that relaxes constraints is more dangerous than one that adds code.
 
 ## Diff to Review
 
 ```diff
-{diff_content[:6000]}
+{diff_content[:15000]}
 ```
 {rubric_section}
 ## Required Response (JSON only)
@@ -880,13 +942,13 @@ Include rubric_scores in your JSON response.
 {{
     "summary": "One sentence: what this code does",
     "intent": "feature|bugfix|refactor|config|security|documentation",
-    "concerns": [],
+    "concerns": ["specific concern 1", "specific concern 2"],
     "risk_assessment": "approve|request_changes|comment",
     "confidence": 0.85,
     "rubric_scores": {{}}
 }}
 
-IMPORTANT: If the code follows security best practices, respond with "approve" and empty concerns array. Only use "request_changes" for actual vulnerabilities."""
+Respond ONLY with the JSON object above."""
 
     def _parse_review_response(self, response: str) -> dict:
         """Parse the JSON response from a model."""
@@ -945,18 +1007,23 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
         for a in assessments:
             assessment_counts[a] = assessment_counts.get(a, 0) + 1
 
-        # Majority vote (or strictest if tie)
+        # Strictest signal wins (not majority vote).
+        # If ANY model flags request_changes, that's the consensus.
+        # Rationale: one cautious reviewer out of three should not be
+        # drowned out by two approvals on subtle vulnerability diffs.
         priority = {"request_changes": 3, "comment": 2, "approve": 1, "error": 0}
         sorted_assessments = sorted(
             assessment_counts.items(),
-            key=lambda x: (-x[1], -priority.get(x[0], 0))
+            key=lambda x: (-priority.get(x[0], 0), -x[1])
         )
         consensus_risk = sorted_assessments[0][0] if sorted_assessments else "comment"
 
-        # Agreement score
+        # Agreement score: fraction of models that chose the consensus pick.
+        # With strictest-wins, this measures how many models actually flagged
+        # the strictest signal (not the majority share).
         if len(valid_reviews) > 1:
-            max_agreement = max(assessment_counts.values())
-            agreement_score = max_agreement / len(valid_reviews)
+            consensus_count = assessment_counts.get(consensus_risk, 0)
+            agreement_score = consensus_count / len(valid_reviews)
         else:
             agreement_score = 1.0
 
@@ -1023,8 +1090,8 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
         import hashlib
         return f"sha256:{hashlib.sha256(diff_content.encode()).hexdigest()}"
 
-    def _call_ollama(self, prompt: str, model: str) -> str:
-        """Call Ollama local model and return response."""
+    def _call_ollama(self, prompt: str, model: str) -> tuple[str, dict]:
+        """Call Ollama local model and return (text, metadata)."""
         import openai
 
         base_url = self.ollama_host.rstrip('/')
@@ -1041,10 +1108,10 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, {"model_id": response.model or model}
 
-    def _call_openrouter(self, prompt: str, model: str) -> str:
-        """Call OpenRouter API and return response."""
+    def _call_openrouter(self, prompt: str, model: str) -> tuple[str, dict]:
+        """Call OpenRouter API and return (text, metadata)."""
         import openai
 
         client = openai.OpenAI(
@@ -1061,10 +1128,10 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
                 "X-Title": "GuardSpine CodeGuard"
             }
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, {"model_id": response.model or model}
 
-    def _call_anthropic(self, prompt: str, model: str) -> str:
-        """Call Anthropic API and return response."""
+    def _call_anthropic(self, prompt: str, model: str) -> tuple[str, dict]:
+        """Call Anthropic API and return (text, metadata)."""
         import anthropic
 
         client = anthropic.Anthropic(api_key=self.anthropic_key)
@@ -1074,10 +1141,10 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
             max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
-        return response.content[0].text
+        return response.content[0].text, {"model_id": response.model or model}
 
-    def _call_openai(self, prompt: str, model: str) -> str:
-        """Call OpenAI API and return response."""
+    def _call_openai(self, prompt: str, model: str) -> tuple[str, dict]:
+        """Call OpenAI API and return (text, metadata)."""
         import openai
 
         client = openai.OpenAI(api_key=self.openai_key)
@@ -1087,7 +1154,7 @@ IMPORTANT: If the code follows security best practices, respond with "approve" a
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content, {"model_id": response.model or model}
 
     def _generate_ai_summary(self, diff_content: str, sensitive_zones: list) -> dict:
         """Generate AI-powered summary of changes."""

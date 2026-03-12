@@ -1,5 +1,5 @@
 # Standard policy: block on provable critical findings only.
-# Opinion-based criticals become conditions for reviewer.
+# Opinion-based criticals and all high-severity findings become conditions.
 name: standard
 
 hard_block_rules:
@@ -10,6 +10,6 @@ condition_rules:
   - severity: critical
     provable_only: false
   - severity: high
-    provable_only: true
+    provable_only: false
 
 max_conditions: 2

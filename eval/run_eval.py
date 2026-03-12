@@ -10,6 +10,7 @@ Usage:
     python run_eval.py --tier L1                # Force L1 (1 model)
     python run_eval.py --tier L0                # Rules only, no API calls
     python run_eval.py --dataset cvefixes       # Run CVEFixes benchmark
+    python run_eval.py --dataset real-cve-intro # Introducing commits (forward diffs)
     python run_eval.py --dataset all            # All datasets
     python run_eval.py --sample sqli_01.patch   # Single sample
     python run_eval.py -v                       # Verbose per-sample output
@@ -20,13 +21,17 @@ import json
 import os
 import sys
 import time
-import tomllib
+try:
+    import tomllib as toml
+except ImportError:
+    import toml
 from collections import Counter
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 _EVAL = Path(__file__).resolve().parent
+_MANIFEST = _EVAL / "datasets" / "real-cve-manifest.yaml"
 sys.path.insert(0, str(_ROOT))
 
 from src.analyzer import DiffAnalyzer
@@ -40,6 +45,46 @@ DEFAULT_THRESHOLD_NOISE = float(os.environ.get("CODEGUARD_EVAL_MAX_NOISE", "10.0
 
 TIER_MODEL_COUNT = {"L0": 0, "L1": 1, "L2": 2, "L3": 3, "L4": 3}
 
+# ---------------------------------------------------------------------------
+# Manifest (for real-cve / real-cve-intro metadata)
+# ---------------------------------------------------------------------------
+
+def load_manifest() -> dict[str, dict]:
+    """Load real-cve-manifest.yaml and return a dict keyed by sanitised CVE ID filename."""
+    if not _MANIFEST.exists():
+        return {}
+    try:
+        import yaml
+        data = yaml.safe_load(_MANIFEST.read_text(encoding="utf-8")) or {}
+        entries = data.get("vulnerabilities", [])
+    except ImportError:
+        # Fallback: minimal YAML parser
+        entries = _parse_manifest_fallback(_MANIFEST.read_text(encoding="utf-8"))
+    lookup: dict[str, dict] = {}
+    for e in entries:
+        cve_id = e.get("cve_id", "")
+        # filename key: cve_2024_34069.patch
+        key = cve_id.lower().replace("-", "_") + ".patch"
+        lookup[key] = e
+    return lookup
+
+
+def _parse_manifest_fallback(text: str) -> list[dict]:
+    entries: list[dict] = []
+    current: dict[str, str] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- repo:"):
+            if current:
+                entries.append(current)
+            current = {"repo": stripped.split(":", 1)[1].strip()}
+        elif ":" in stripped and not stripped.startswith("#") and current:
+            key, val = stripped.split(":", 1)
+            current[key.strip().lstrip("- ")] = val.strip()
+    if current:
+        entries.append(current)
+    return entries
+
 # Dataset directories under eval/samples/
 DATASETS = {
     "hand-crafted": "hand-crafted",
@@ -47,6 +92,8 @@ DATASETS = {
     "cvefixes": "cvefixes",
     "juliet": "juliet",
     "castle": "castle",
+    "real-cve": "real-cve",
+    "real-cve-intro": "real-cve-intro",
 }
 
 
@@ -58,7 +105,7 @@ DATASETS = {
 class Result:
     sample: str
     dataset: str
-    category: str          # vulnerable | clean
+    category: str          # vulnerable | clean | introducing (introducing excluded from scoring)
     expected_flag: bool
     tier_preliminary: str
     tier_final: str
@@ -74,10 +121,18 @@ class Result:
     forced_tier: str
     deliberation_rounds: int = 0
     early_exit: bool = False
+    cve_id: str = ""
+    introducing_reasoning: str = ""
 
     @property
     def flagged(self) -> bool:
+        """Decision engine enforcement: block or conditions."""
         return self.decision in ("block", "merge-with-conditions")
+
+    @property
+    def ai_detected(self) -> bool:
+        """AI signal: consensus is not approve (request_changes or comment)."""
+        return self.consensus not in ("approve", "", None)
 
     @property
     def correct(self) -> bool:
@@ -111,6 +166,7 @@ def run_sample(
     engine: DecisionEngine,
     forced_tier: str | None = None,
     deliberate: bool = False,
+    manifest_entry: dict | None = None,
 ) -> Result:
     """Run one diff sample through the full pipeline."""
     errors = []
@@ -119,6 +175,9 @@ def run_sample(
     diff_content = sample_path.read_text(encoding="utf-8")
     category = sample_path.parent.name
     expected_flag = category == "vulnerable"
+
+    if category == "introducing":
+        errors.append("EXCLUDED: introducing patches have unverified labels")
 
     # 1. Analyze (pass forced_tier so analyzer uses correct model count)
     try:
@@ -170,6 +229,7 @@ def run_sample(
     delib_rounds = mmr.get("deliberation_rounds", 0)
     delib_early = mmr.get("early_exit", False)
 
+    me_ = manifest_entry or {}
     return Result(
         sample=sample_path.name,
         dataset=dataset_name,
@@ -189,6 +249,8 @@ def run_sample(
         forced_tier=forced_tier or "auto",
         deliberation_rounds=delib_rounds,
         early_exit=delib_early,
+        cve_id=me_.get("cve_id", ""),
+        introducing_reasoning=me_.get("introducing_reasoning", ""),
     )
 
 
@@ -238,13 +300,16 @@ def compute_stats(
     threshold_fp: float,
     threshold_fn: float,
 ) -> dict:
-    total = len(results)
+    # Exclude introducing samples from scoring -- labels are unverified
+    scored = [r for r in results if r.category in ("vulnerable", "clean")]
+    total = len(scored)
     if total == 0:
-        return {"total": 0}
+        return {"total": 0, "excluded_introducing": len(results) - len(scored)}
 
-    vuln = [r for r in results if r.expected_flag]
-    clean = [r for r in results if not r.expected_flag]
+    vuln = [r for r in scored if r.expected_flag]
+    clean = [r for r in scored if not r.expected_flag]
 
+    # Decision engine metrics (block/conditions)
     fp = sum(1 for r in results if r.false_positive)
     fn = sum(1 for r in results if r.false_negative)
     correct = sum(1 for r in results if r.correct)
@@ -253,8 +318,18 @@ def compute_stats(
     fp_rate = fp / len(clean) * 100 if clean else 0
     fn_rate = fn / len(vuln) * 100 if vuln else 0
 
+    # AI signal metrics (consensus != approve)
+    ai_vuln_detected = sum(1 for r in vuln if r.ai_detected)
+    ai_clean_alarmed = sum(1 for r in clean if r.ai_detected)
+    ai_detect_pct = round(ai_vuln_detected / len(vuln) * 100, 1) if vuln else 0
+    ai_fp_pct = round(ai_clean_alarmed / len(clean) * 100, 1) if clean else 0
+
+    # Tier classification accuracy (how well does the classifier assign tiers)
+    tier_dist = dict(Counter(r.tier_final for r in results))
+
     return {
         "total": total,
+        "excluded_introducing": len(results) - len(scored),
         "correct": correct,
         "accuracy_pct": round(correct / total * 100, 1),
         "vuln_count": len(vuln),
@@ -264,7 +339,12 @@ def compute_stats(
         "fn": fn, "fn_rate_pct": round(fn_rate, 1),
         "fp_pass": fp_rate < threshold_fp,
         "fn_pass": fn_rate < threshold_fn,
-        "tier_dist": dict(Counter(r.tier_final for r in results)),
+        "tier_dist": tier_dist,
+        # AI signal layer
+        "ai_vuln_detected": ai_vuln_detected,
+        "ai_detect_pct": ai_detect_pct,
+        "ai_clean_alarmed": ai_clean_alarmed,
+        "ai_fp_pct": ai_fp_pct,
     }
 
 
@@ -280,10 +360,25 @@ def print_report(
     print("EVAL SUMMARY")
     print("=" * 60)
 
-    print(f"Accuracy:        {stats['correct']}/{stats['total']} ({stats['accuracy_pct']}%)")
-    print(f"Detection rate:  {stats['detect_rate_pct']}% ({stats['vuln_count']} vulnerable samples)")
-    print(f"FP rate:         {stats['fp']}/{stats['clean_count']} ({stats['fp_rate_pct']}%)")
-    print(f"FN rate:         {stats['fn']}/{stats['vuln_count']} ({stats['fn_rate_pct']}%)")
+    # Decision engine metrics
+    print("Decision Engine (enforcement):")
+    print(f"  Accuracy:        {stats['correct']}/{stats['total']} ({stats['accuracy_pct']}%)")
+    excluded = stats.get("excluded_introducing", 0)
+    if excluded:
+        print(f"  Excluded:        {excluded} introducing samples (unverified labels)")
+    print(f"  Detection rate:  {stats['detect_rate_pct']}% ({stats['vuln_count']} vulnerable samples)")
+    print(f"  FP rate:         {stats['fp']}/{stats['clean_count']} ({stats['fp_rate_pct']}%)")
+    print(f"  FN rate:         {stats['fn']}/{stats['vuln_count']} ({stats['fn_rate_pct']}%)")
+
+    # AI signal metrics
+    ai_det = stats.get("ai_vuln_detected", 0)
+    ai_fp = stats.get("ai_clean_alarmed", 0)
+    print()
+    print("AI Signal (consensus != approve):")
+    print(f"  AI detection:    {ai_det}/{stats['vuln_count']} ({stats.get('ai_detect_pct', 0)}%)")
+    print(f"  AI false alarm:  {ai_fp}/{stats['clean_count']} ({stats.get('ai_fp_pct', 0)}%)")
+
+    print()
     print(f"Time:            {elapsed:.1f}s")
 
     print()
@@ -294,8 +389,18 @@ def print_report(
 
     # Tier distribution
     print()
+    print("Tier distribution:")
     for tier in sorted(stats["tier_dist"]):
         print(f"  {tier}: {stats['tier_dist'][tier]}")
+
+    # Per-sample tier detail (verbose only)
+    if verbose:
+        print()
+        print("Per-sample tier assignments:")
+        for r in results:
+            flag_icon = "!" if r.flagged else " "
+            ai_icon = "~" if r.ai_detected else " "
+            print(f"  [{flag_icon}{ai_icon}] {r.tier_preliminary}->{r.tier_final}  {r.category:10s}  {r.sample}")
 
     # By category
     print()
@@ -320,7 +425,8 @@ def print_report(
         print("FAILURES:")
         for r in failures:
             label = "FP" if r.false_positive else "FN"
-            print(f"  [{label}] {r.dataset}/{r.category}/{r.sample} -> {r.decision}")
+            ai_note = f" [AI: {r.consensus}]" if r.consensus else ""
+            print(f"  [{label}] {r.dataset}/{r.category}/{r.sample} -> {r.decision}{ai_note}")
 
 
 def write_results(
@@ -344,7 +450,7 @@ def write_results(
             "timestamp": ts,
             "forced_tier": forced_tier,
             "thresholds": {"fp": threshold_fp, "fn": threshold_fn, "noise": threshold_noise},
-            **{k: v for k, v in stats.items() if k != "tier_dist"},
+            **stats,
         },
         "results": [asdict(r) for r in results],
     }
@@ -363,7 +469,7 @@ def load_api_key() -> str:
     secrets_path = _EVAL / ".codeguard" / ".secrets.toml"
     if secrets_path.exists():
         with open(secrets_path, "rb") as f:
-            data = tomllib.load(f)
+            data = toml.load(f)
         key = data.get("openrouter_api_key", "")
         if key:
             return key
@@ -428,7 +534,7 @@ def parse_args():
     p.add_argument("--dry-run", action="store_const", const="L0", dest="tier",
                     help="Alias for --tier L0 (rules only)")
     p.add_argument("--dataset", default="hand-crafted",
-                    help="Dataset to run: hand-crafted, cvefixes, juliet, castle, all")
+                    help="Dataset to run: hand-crafted, cvefixes, juliet, castle, real-cve, real-cve-intro, all")
     p.add_argument("--sample", default=None,
                     help="Run a single sample by filename")
     p.add_argument("--deliberate", action="store_true",
@@ -444,6 +550,36 @@ def parse_args():
     return p.parse_args()
 
 
+def _preflight_api_key(api_key: str, tier: str | None) -> bool:
+    """Check API key has credits before running L1+ evals."""
+    if not tier or tier == "L0" or not api_key:
+        return True
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/auth/key",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())["data"]
+        usage = data.get("usage", 0)
+        limit = data.get("limit")
+        remaining = data.get("limit_remaining")
+        print(f"OpenRouter usage: ${usage:.2f}", end="")
+        if limit is not None:
+            print(f"  limit: ${limit:.2f}  remaining: ${remaining:.2f}")
+            if remaining is not None and remaining <= 0:
+                print("ERROR: OpenRouter key has no remaining credits.")
+                print("  Raise the per-key limit at https://openrouter.ai/settings/keys")
+                return False
+        else:
+            print("  (no per-key limit)")
+        return True
+    except Exception as e:
+        print(f"WARNING: Could not verify API key: {e}")
+        return True  # proceed anyway, let the model call fail naturally
+
+
 def main():
     args = parse_args()
 
@@ -453,6 +589,10 @@ def main():
     # API key
     api_key = load_api_key()
     print(f"OpenRouter key: {'set' if api_key else 'MISSING'}")
+
+    # Pre-flight: verify key has credits for L1+
+    if not _preflight_api_key(api_key, args.tier):
+        sys.exit(1)
 
     # Components
     analyzer = make_analyzer(api_key, args.tier)
@@ -468,6 +608,9 @@ def main():
     print(f"Samples: {len(samples)} ({args.dataset})")
     print("=" * 60)
 
+    # Load manifest for real-cve / real-cve-intro metadata
+    manifest = load_manifest() if args.dataset in ("real-cve", "real-cve-intro", "all") else {}
+
     # Run
     results = []
     t0 = time.monotonic()
@@ -479,7 +622,8 @@ def main():
             rel = path.name
         print(f"\n[{i}/{len(samples)}] {rel}")
 
-        r = run_sample(path, ds_name, analyzer, classifier, engine, args.tier, args.deliberate)
+        manifest_entry = manifest.get(path.name)
+        r = run_sample(path, ds_name, analyzer, classifier, engine, args.tier, args.deliberate, manifest_entry)
         results.append(r)
 
         label = "OK" if r.correct else ("FP" if r.false_positive else "FN")
@@ -493,6 +637,10 @@ def main():
                 if r.early_exit:
                     delib_info += " (early-exit)"
             print(f"  AI: {r.models_used} ok, {failed} failed  consensus={r.consensus or '(none)'}  agreement={r.agreement:.2f}{delib_info}")
+        if r.cve_id:
+            print(f"  CVE: {r.cve_id}")
+            if r.introducing_reasoning and args.verbose:
+                print(f"  Intro: {r.introducing_reasoning}")
         if r.errors:
             for e in r.errors:
                 print(f"  ERROR: {e}")

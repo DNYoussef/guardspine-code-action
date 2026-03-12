@@ -1,0 +1,42 @@
+{
+  "detected": true,
+  "risk_level": 2,
+  "signals": ["prototype_pollution", "recursive_merge", "missing_proto_check", "__proto__"],
+  "categories": ["prototype_pollution"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "summary": "Custom recursive merge lacks __proto__ and constructor guards, enabling prototype pollution",
+      "evidence": ["for (const key in source) {", "deepMerge(target[key], source[key]);"],
+      "file_paths": ["src/utils/merge.js"],
+      "remediation": "Add guard: if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;"
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 2,
+        "signals": ["prototype_pollution", "missing_proto_check"],
+        "findings": ["F1"]
+      },
+      "gpt-4o": {
+        "risk_level": 2,
+        "signals": ["recursive_merge", "__proto__"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 2, "accepted": ["F1"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 2, "accepted": ["F1"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 2,
+      "signals": ["prototype_pollution", "recursive_merge", "missing_proto_check", "__proto__"],
+      "findings": ["F1"],
+      "human_required": false
+    }
+  }
+}

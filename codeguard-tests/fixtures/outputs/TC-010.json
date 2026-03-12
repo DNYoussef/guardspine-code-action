@@ -1,0 +1,34 @@
+{
+  "detected": true,
+  "risk_level": 1,
+  "signals": ["refactor", "rename"],
+  "categories": ["refactor"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "info",
+      "summary": "Semantic-preserving refactor: variable rename and function reorder with type annotations",
+      "evidence": ["def calculate_total(items: list) -> float:", "def format_currency(amount: float) -> str:"],
+      "file_paths": ["src/utils.py"],
+      "remediation": "No action needed. Behavior is identical."
+    }
+  ],
+  "council": {
+    "enabled": false,
+    "models": ["claude-sonnet-4-5"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 1,
+        "signals": ["refactor"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {},
+    "consensus": {
+      "risk_level": 1,
+      "signals": ["refactor", "rename"],
+      "findings": ["F1"],
+      "human_required": false
+    }
+  }
+}

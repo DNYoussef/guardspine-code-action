@@ -2,21 +2,24 @@
 PyGithub>=2.1.0
 requests>=2.31.0
 pyyaml>=6.0
-jsonschema>=4.0
+# jsonschema>=4.0  # unused
 
 # Diff and analysis
 unidiff>=0.7.5
 
 # Evidence bundle generation
 cryptography>=41.0
+guardspine-kernel>=0.2.0
 
 # Optional AI backends (used if API keys provided)
 openai>=1.0.0
 anthropic>=0.18.0
-litellm>=1.0.0
+# litellm>=1.0.0  # unused
 
 # Output formatting
-rich>=13.0
+# rich>=13.0  # unused
 
 # WASM Runtime
 wasmtime>=16.0.0
+
+toml==0.10.2

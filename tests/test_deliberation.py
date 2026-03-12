@@ -34,9 +34,13 @@ SAMPLE_DIFF = (
     " print('hello')\n"
 )
 
-# A canned review response for mocking
+# Stub metadata returned alongside model text (simulates API model_id).
+_STUB_META = {"model_id": "test-model-v1"}
+
+# A canned review response for mocking.
+# Returns (text, metadata) tuple matching the _call_* contract.
 def _make_review(verdict="approve", confidence=0.90, concerns=None):
-    return json.dumps({
+    text = json.dumps({
         "summary": "Test change",
         "intent": "feature",
         "concerns": concerns or [],
@@ -44,11 +48,12 @@ def _make_review(verdict="approve", confidence=0.90, concerns=None):
         "confidence": confidence,
         "rubric_scores": {},
     })
+    return text, _STUB_META
 
 
 def _make_crosscheck_response(verdict="approve", confidence=0.90,
                                concerns=None, changed=False, reason=""):
-    return json.dumps({
+    text = json.dumps({
         "summary": "Cross-checked",
         "concerns": concerns or [],
         "risk_assessment": verdict,
@@ -56,6 +61,7 @@ def _make_crosscheck_response(verdict="approve", confidence=0.90,
         "verdict_changed": changed,
         "change_reason": reason,
     })
+    return text, _STUB_META
 
 
 class TestDeliberation(unittest.TestCase):
@@ -278,7 +284,7 @@ class TestDeliberation(unittest.TestCase):
         """Models sometimes return concerns as dicts instead of strings."""
         analyzer = self._make_analyzer(2)
         # Simulate model returning structured concern objects
-        review_with_dict_concerns = json.dumps({
+        review_with_dict_concerns = (json.dumps({
             "summary": "Test",
             "intent": "feature",
             "concerns": [
@@ -289,7 +295,7 @@ class TestDeliberation(unittest.TestCase):
             "risk_assessment": "request_changes",
             "confidence": 0.85,
             "rubric_scores": {},
-        })
+        }), _STUB_META)
 
         with patch.object(analyzer, "_call_openrouter",
                           return_value=review_with_dict_concerns):
@@ -301,6 +307,50 @@ class TestDeliberation(unittest.TestCase):
         for c in consensus["combined_concerns"]:
             self.assertIsInstance(c, str)
         self.assertIn("SQL injection risk", consensus["combined_concerns"])
+
+
+    def test_consensus_strictest_wins_over_majority(self):
+        """If 2 approve + 1 request_changes, consensus = request_changes."""
+        analyzer = self._make_analyzer(3)
+        reviews = [
+            {"risk_assessment": "approve", "confidence": 0.90, "concerns": []},
+            {"risk_assessment": "approve", "confidence": 0.85, "concerns": []},
+            {"risk_assessment": "request_changes", "confidence": 0.80,
+             "concerns": ["Missing input validation"]},
+        ]
+        consensus = analyzer._calculate_consensus(reviews, False)
+
+        self.assertEqual(consensus["consensus_risk"], "request_changes",
+                         "Strictest signal should win even when outnumbered")
+        self.assertEqual(consensus["models_agreed"], 1)
+        self.assertEqual(consensus["total_models"], 3)
+
+    def test_consensus_unanimous_approve_stays_approve(self):
+        """If all models approve, consensus = approve (unchanged)."""
+        analyzer = self._make_analyzer(3)
+        reviews = [
+            {"risk_assessment": "approve", "confidence": 0.90, "concerns": []},
+            {"risk_assessment": "approve", "confidence": 0.85, "concerns": []},
+            {"risk_assessment": "approve", "confidence": 0.92, "concerns": []},
+        ]
+        consensus = analyzer._calculate_consensus(reviews, False)
+
+        self.assertEqual(consensus["consensus_risk"], "approve")
+        self.assertEqual(consensus["agreement_score"], 1.0)
+
+    def test_consensus_comment_beats_approve(self):
+        """If 2 approve + 1 comment, consensus = comment (stricter)."""
+        analyzer = self._make_analyzer(3)
+        reviews = [
+            {"risk_assessment": "approve", "confidence": 0.90, "concerns": []},
+            {"risk_assessment": "approve", "confidence": 0.85, "concerns": []},
+            {"risk_assessment": "comment", "confidence": 0.70,
+             "concerns": ["Unusual pattern"]},
+        ]
+        consensus = analyzer._calculate_consensus(reviews, False)
+
+        self.assertEqual(consensus["consensus_risk"], "comment",
+                         "Comment should beat approve (stricter signal)")
 
 
 if __name__ == "__main__":

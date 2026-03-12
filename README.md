@@ -1,11 +1,13 @@
 # GuardSpine CodeGuard
 
-**AI-aware code governance with cryptographically verifiable evidence bundles**
+**AI-powered code governance with cryptographically verifiable evidence bundles**
 
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-GuardSpine%20CodeGuard-blue?logo=github)](https://github.com/marketplace/actions/guardspine-codeguard)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ---
+
+> **New here?** Start with the [5-Minute Quick Start](docs/QUICKSTART.md) -- one workflow file, one API key, done.
 
 ## The Problem
 
@@ -37,6 +39,11 @@ Ollama requires no API key (self-hosted, air-gapped).
 ```yaml
 name: CodeGuard
 on: [pull_request]
+
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -57,10 +64,10 @@ jobs:
         if: always()
         with:
           name: evidence-bundle
-          path: ${{ steps.guard.outputs.bundle_path }}
+          path: .guardspine/bundles/
 ```
 
-**3. Open a PR.** You'll see a Decision Card comment with risk tier + findings, and the evidence bundle in workflow artifacts.
+**3. Open a PR.** You will see a Decision Card comment with the verdict (merge / merge-with-conditions / block), risk tier, and findings. The evidence bundle appears in workflow artifacts.
 
 **Verify a bundle locally** (optional):
 ```bash
@@ -71,185 +78,123 @@ pip install guardspine-verify && guardspine-verify .guardspine/bundles/*.json
 
 ---
 
-## How It Works
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         GUARDSPINE CODEGUARD FLOW                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-  ┌──────────┐
-  │ PR Open  │
-  │ /Update  │
-  └────┬─────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           1. DIFF ANALYSIS                                │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │  • Parse unified diff (unidiff)                                     │ │
-│  │  • Extract file changes, hunks, line-level modifications            │ │
-│  │  • Detect 13 sensitive zones:                                       │ │
-│  │    [auth] [payment] [crypto] [database] [security] [pii] [config]   │ │
-│  │    [infra]                                                          │ │
-│  │  • Generate SHA-256 diff hash for integrity                         │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                    2. TIER-BASED MULTI-MODEL AI REVIEW                   │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │  Models scale with risk tier (not fallback - actual multi-review):  │ │
-│  │                                                                     │ │
-│  │   L0 (Trivial)  → 0 models  (rules-based only, no AI)              │ │
-│  │   L1 (Low)      → 1 model   (single model review)                  │ │
-│  │   L2 (Medium)   → 2 models  + rubric scoring                       │ │
-│  │   L3 (High)     → 3 models  + rubric scoring                       │ │
-│  │   L4 (Critical) → 3 models  + rubric scoring + human approval      │ │
-│  │                                                                     │ │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐                             │ │
-│  │  │ Model 1 │  │ Model 2 │  │ Model 3 │  ← Run in PARALLEL          │ │
-│  │  │ Claude  │  │  GPT    │  │ Gemini  │                             │ │
-│  │  └────┬────┘  └────┬────┘  └────┬────┘                             │ │
-│  │       │            │            │                                   │ │
-│  │       └────────────┼────────────┘                                   │ │
-│  │                    ▼                                                │ │
-│  │            ┌──────────────┐                                         │ │
-│  │            │  CONSENSUS   │  Majority vote + rubric aggregation    │ │
-│  │            │  CALCULATOR  │  Agreement score + dissent tracking    │ │
-│  │            └──────────────┘                                         │ │
-│  │                                                                     │ │
-│  │  Flexible model selection:                                          │ │
-│  │   • All 3 from Ollama (air-gapped)                                 │ │
-│  │   • All 3 from OpenRouter (100+ models)                            │ │
-│  │   • Mix of direct APIs (Claude + GPT + Gemini)                     │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        3. RISK CLASSIFICATION                             │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │  Three scoring dimensions → Final risk tier:                        │ │
-│  │                                                                     │ │
-│  │   File Patterns ──────┐                                             │ │
-│  │   (auth/payment/pii)  │                                             │ │
-│  │                       ├──→ max(scores) ──→ ┌────────────────────┐   │ │
-│  │   Sensitive Zones ────┤                    │   L0 │ Trivial     │   │ │
-│  │   (13 zone types)     │                    │   L1 │ Low         │   │ │
-│  │                       │                    │   L2 │ Medium      │   │ │
-│  │   Change Size ────────┘                    │   L3 │ High    ⚠️  │   │ │
-│  │   (lines added/removed)                    │   L4 │ Critical ⛔ │   │ │
-│  │                                            └────────────────────┘   │ │
-│  │                                                                     │ │
-│  │  Rubric boost: SOC2/HIPAA/PCI-DSS rules can escalate tier          │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
-       │
-       ├──────────────────────────────────────┐
-       ▼                                      ▼
-┌────────────────────┐              ┌────────────────────┐
-│ L0-L2: Auto-pass   │              │ L3-L4: Block merge │
-│ ✓ PR check passes  │              │ ⚠ Requires review  │
-│ ✓ Comment posted   │              │ ⛔ Human approval  │
-└────────────────────┘              └────────────────────┘
-       │                                      │
-       └──────────────────┬───────────────────┘
-                          ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                      4. EVIDENCE BUNDLE GENERATION                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐ │
-│  │  Hash-chained event sequence (tamper-evident):                      │ │
-│  │                                                                     │ │
-│  │   Event 1           Event 2            Event 3          Event 4     │ │
-│  │  ┌─────────┐       ┌─────────┐        ┌─────────┐      ┌─────────┐  │ │
-│  │  │   PR    │──H1──▶│Analysis │──H2───▶│  Risk   │─H3──▶│Approval │  │ │
-│  │  │Submitted│       │Complete │        │Classify │      │(if L3+) │  │ │
-│  │  └─────────┘       └─────────┘        └─────────┘      └─────────┘  │ │
-│  │       │                                                     │       │ │
-│  │       └───────────────── Final Hash ────────────────────────┘       │ │
-│  │                                                                     │ │
-│  │  Bundle includes: diff snapshot, risk drivers, findings, rationale │ │
-│  │  Supports: Ed25519, RSA, ECDSA, or HMAC-SHA256 signatures          │ │
-│  └─────────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│                           5. OUTPUT ARTIFACTS                             │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────────────────┐  │
-│  │  Diff Postcard │  │ Evidence Bundle│  │     SARIF Export           │  │
-│  │  (PR Comment)  │  │  (JSON file)   │  │  (GitHub Security Tab)     │  │
-│  │                │  │                │  │                            │  │
-│  │ • Risk tier    │  │ • Hash chain   │  │ • Findings as alerts       │  │
-│  │ • Top drivers  │  │ • Event log    │  │ • File locations           │  │
-│  │ • Findings     │  │ • Signatures   │  │ • Severity mapping         │  │
-│  │ • AI summary   │  │ • Snapshot     │  │                            │  │
-│  └────────────────┘  └────────────────┘  └────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
+PR opened/updated
+       |
+       v
+1. DIFF ANALYSIS
+   Parse unified diff, extract file changes and hunks.
+   Detect sensitive zones: auth, payment, crypto, database,
+   security, pii, config, infra, xss, command_injection,
+   deserialization, template_injection, path_traversal, weak_crypto.
+   Generate SHA-256 diff hash for integrity.
+       |
+       v
+2. TIER-BASED MULTI-MODEL AI REVIEW
+   Models scale with risk tier (not fallback -- actual multi-review):
+     L0 (Trivial)  -> 0 models (rules-only, no AI)
+     L1 (Low)      -> 1 model
+     L2 (Medium)   -> 2 models + rubric scoring
+     L3 (High)     -> 3 models + rubric scoring
+     L4 (Critical) -> 3 models + rubric scoring + human approval
+   Models run in parallel. Consensus: majority vote + rubric aggregation.
+       |
+       v
+3. RISK CLASSIFICATION
+   Three scoring dimensions:
+     - File patterns (auth/payment/pii path matching)
+     - Sensitive zones (keyword detection in diff content)
+     - Change size (lines added + removed)
+   Final tier = max(scores), boosted by rubric/zone findings.
+   AI consensus modulates severity: approve -> downgrade zone findings,
+   request_changes -> upgrade medium findings to high.
+       |
+       v
+4. DECISION ENGINE
+   Findings in, one verdict out: merge, merge-with-conditions, or block.
+   Provable findings (deterministic detections) can hard-block.
+   Opinion findings (AI-generated) are advisory-only -- they can trigger
+   merge-with-conditions but never block.
+   Policy profiles control which severities block vs. condition.
+       |
+       v
+5. EVIDENCE BUNDLE
+   Hash-chained event sequence (guardspine-spec v0.2.0):
+     PR Submitted -> Analysis Complete -> Risk Classified -> Approval (if L3+)
+   Supports Ed25519, RSA, ECDSA, or HMAC-SHA256 signatures.
+       |
+       v
+6. OUTPUTS
+   - Decision Card (PR comment): verdict, risk tier, findings, conditions
+   - Evidence Bundle (JSON artifact): hash chain, event log, signatures
+   - SARIF (optional): findings as GitHub Security alerts
 ```
 
-### Tier-Based Multi-Model Review
+---
 
-CodeGuard uses **escalating AI review** - more models review higher-risk changes:
+## Decision Engine
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     TIER-BASED MODEL ESCALATION                          │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│   L0 (Trivial)   →  0 models   Rules-based only (docs, formatting)      │
-│   L1 (Low)       →  1 model    Single model review                      │
-│   L2 (Medium)    →  2 models   Dual review + rubric scoring             │
-│   L3 (High)      →  3 models   Triple review + rubric + approval req    │
-│   L4 (Critical)  →  3 models   Triple review + rubric + HUMAN approval  │
-│                                                                          │
-│   ┌──────────────────────────────────────────────────────────────────┐  │
-│   │  CONSENSUS OUTPUT:                                               │  │
-│   │   • consensus_risk: "approve" | "request_changes" | "comment"    │  │
-│   │   • agreement_score: 0.0 - 1.0 (model agreement %)               │  │
-│   │   • combined_concerns: deduplicated from all models              │  │
-│   │   • rubric_summary: averaged scores per dimension                │  │
-│   │   • dissenting_opinions: models that disagreed                   │  │
-│   └──────────────────────────────────────────────────────────────────┘  │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+The decision engine is the core of CodeGuard. It collapses all findings into exactly one of three verdicts:
 
-### Flexible Model Configuration
+| Verdict | Meaning | When |
+|---------|---------|------|
+| **merge** | Safe to merge | No hard blocks, no conditions |
+| **merge-with-conditions** | Reviewer action needed on 1-2 items | High/critical non-provable findings present |
+| **block** | Cannot merge | Provable critical finding detected |
 
-Configure **any combination** of models - same provider or mixed:
+### Provable vs. Opinion Findings
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                     EXAMPLE CONFIGURATIONS                               │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                          │
-│  Option 1: All OpenRouter (recommended - single API)                     │
-│    model_1: anthropic/claude-4.5-sonnet                                  │
-│    model_2: openai/gpt-5.2                                               │
-│    model_3: google/gemini-3-flash                                        │
-│                                                                          │
-│  Option 2: All Ollama (air-gapped)                                       │
-│    model_1: llama4                                                       │
-│    model_2: mistral-large                                                │
-│    model_3: codellama-70b                                                │
-│                                                                          │
-│  Option 3: Mixed direct APIs                                             │
-│    model_1: claude-4.5-haiku    (anthropic_api_key)                      │
-│    model_2: gpt-5.2-mini        (openai_api_key)                         │
-│    model_3: llama4              (ollama_host)                            │
-│                                                                          │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+This distinction is fundamental to the decision engine:
 
-| Provider | Data Residency | Default Models | Best For |
-|----------|----------------|----------------|----------|
-| **Ollama** | Your infrastructure | llama4, mistral-large, codellama-70b | Air-gapped/regulated |
-| **OpenRouter** | OpenRouter servers | Claude 4.5, GPT 5.2, Gemini 3 | Flexibility, diversity |
-| **Anthropic** | Anthropic servers | Claude 4.5 Haiku | Direct Claude access |
-| **OpenAI** | OpenAI servers | GPT 5.2 Mini | Existing OpenAI users |
+- **Provable findings** come from deterministic detection: regex-matched sensitive zones, rubric rule pattern matches, file path classification. These are reproducible -- run the same diff twice, get the same findings. Provable findings can hard-block a PR.
+
+- **Opinion findings** come from AI model reviews. They are non-deterministic and model-dependent. Opinion findings can only trigger `merge-with-conditions` (surfaced for human review), never `block`. This prevents AI hallucinations from blocking merges.
+
+### Decision Policies
+
+Three built-in policies control how findings map to verdicts. Set via `decision_policy` input.
+
+**standard** (default): Block only on provable critical findings. Non-provable criticals and all high-severity findings become conditions (max 2).
+
+**strict**: Block on any critical (provable or not) and on provable high-severity findings. Non-provable highs and provable mediums become conditions.
+
+**advisory**: Never auto-block. All criticals and highs become conditions. Use this when ramping up trust in the system.
+
+Custom policies are YAML files with three keys: `hard_block_rules`, `condition_rules`, `max_conditions`. See `src/decision_profiles/` for examples.
+
+### AI Consensus Modulation
+
+When AI models review the diff, their consensus adjusts finding severity before the decision engine runs:
+
+- **AI approves (agreement >= 0.6)**: Zone-based findings are double-downgraded (critical -> high, high -> low). This reduces false positives from keyword matches the AI confirmed as benign. Rubric findings are never downgraded.
+- **AI requests changes (agreement >= 0.6)**: Medium findings are upgraded to high. AI concerns are injected as non-provable high-severity findings.
+- **AI comments (uncertain)**: Zone findings are single-downgraded. AI concerns are injected as medium-severity.
+- **AI minority dissent**: Concerns from a single dissenting model are injected as medium-severity advisory items.
+
+---
+
+## Dependencies
+
+Runtime dependencies (`requirements.txt`):
+
+| Package | Purpose |
+|---------|---------|
+| `PyGithub>=2.1.0` | GitHub API for PR operations |
+| `requests>=2.31.0` | HTTP client |
+| `pyyaml>=6.0` | YAML parsing for rubrics and policies |
+| `unidiff>=0.7.5` | Unified diff parsing |
+| `cryptography>=41.0` | Bundle signing (Ed25519, RSA, ECDSA) |
+| `guardspine-kernel>=0.2.0` | Evidence bundle types and canonical JSON |
+| `openai>=1.0.0` | OpenAI/OpenRouter API adapter |
+| `anthropic>=0.18.0` | Anthropic API adapter |
+| `wasmtime>=16.0.0` | WASM runtime for PII-Shield local mode |
+| `toml==0.10.2` | TOML parsing |
+
+The decision engine (`src/decision_engine.py`) is vendored from `guardspine-product`. It is kept vendored because the Docker image runs without access to private pip indexes. The provenance header in the file tracks the sync date. Re-sync manually when the upstream decision logic changes.
+
+---
 
 ### Risk Tiers
 
@@ -273,37 +218,52 @@ Configure **any combination** of models - same provider or mixed:
 
 ## Features
 
-### Diff Postcard (PR Comment)
+### Decision Card (PR Comment)
 
-Every PR gets a summary comment showing:
-- Risk tier with visual indicator
-- Top risk drivers (why this tier?)
-- Findings from policy evaluation
-- Approval requirements
+Every PR gets a decision card comment showing:
+- Verdict: merge, merge-with-conditions, or block
+- Risk tier with rationale
+- Hard blocks (provable failures that prevent merge)
+- Conditions (max 2 items requiring reviewer action)
+- Advisory findings (collapsed, informational)
 
 ### Evidence Bundles
 
-Cryptographically verifiable JSON bundles containing:
-- Hash-chained event sequence
+Cryptographically verifiable JSON bundles following [guardspine-spec](https://github.com/DNYoussef/guardspine-spec) v0.2.0. Contains:
+- Hash-chained event sequence (tamper-evident)
+- v0.2.0 `items` + `immutability_proof` (canonical)
+- Legacy `events` + `hash_chain` (backward compatible, will be removed in next major)
 - Diff snapshot at analysis time
 - Risk assessment details
 - Approval records (when applicable)
+- Optional cryptographic signatures
 
-Verify any bundle independently - see [Verification](#verification) section below.
+Verify any bundle independently -- see [Verification](#verification) section below.
 
-### Evidence Mappings for Audit Support
+### Compliance Rubrics
 
-Pre-built rule sets that map findings to audit frameworks:
-- **SOC 2** - CC6, CC7, CC8 control evidence
-- **HIPAA** - 164.312 safeguard documentation
-- **PCI-DSS** - Requirement 3, 6, 8 evidence exports
+Pre-built rubric YAML files ship in `rubrics/builtin/`:
 
-> **Note**: These are *evidence mappings* that help document your existing controls - they don't make you compliant by themselves. Always work with your auditors.
+| Rubric | File | Purpose |
+|--------|------|---------|
+| default | `default.yaml` | General code quality |
+| security | `security.yaml` | Security-focused patterns |
+| soc2 | `soc2-controls.yaml` | SOC 2 CC6/CC7/CC8 evidence mapping |
+| hipaa | `hipaa-safeguards.yaml` | HIPAA 164.312 safeguard documentation |
+| pci-dss | `pci-dss-requirements.yaml` | PCI-DSS Req 3/6/8 evidence |
+| connascence | `connascence.yaml` | Coupling analysis |
+| safety-violations | `safety-violations.yaml` | Safety-critical code patterns |
+| nasa-safety | `nasa-safety.yaml` | NASA Power of Ten rules |
+| theater-detection | `theater-detection.yaml` | Security theater detection |
+
+Custom rubrics are YAML files with a `rules` key. Place them in `.guardspine/rubrics/` or pass a path via the `rubric` input. Rules support `pattern`/`patterns` (regex), `severity`, `message`, and `exceptions` (glob patterns to skip).
+
+> **Note**: These are *evidence mappings* that help document your existing controls -- they do not make you compliant by themselves. Always work with your auditors.
 
 ```yaml
 - uses: DNYoussef/codeguard-action@v1
   with:
-    rubric: hipaa  # or: soc2, pci-dss, default
+    rubric: hipaa  # or: soc2, pci-dss, default, security, or path to custom YAML
 ```
 
 ### SARIF Integration
@@ -320,6 +280,19 @@ Export findings to GitHub Security tab:
     sarif_file: guardspine-results.sarif
 ```
 
+### Auto-Merge
+
+Clean PRs (decision=merge, tier below threshold) can be auto-merged:
+
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    auto_merge: true
+    auto_merge_method: squash  # or merge, rebase
+```
+
+Requires `contents: write` permission on the workflow.
+
 ## Configuration
 
 ### Inputs
@@ -329,22 +302,29 @@ Export findings to GitHub Security tab:
 | `risk_threshold` | Tier at which to require approval (L0-L4) | `L3` |
 | `rubric` | Policy rubric (default, security, soc2, hipaa, pci-dss, or custom YAML path) | `default` |
 | `github_token` | GitHub token for PR operations | Required |
-| `post_comment` | Post Diff Postcard comment | `true` |
+| `post_comment` | Post Decision Card comment | `true` |
 | `generate_bundle` | Create evidence bundle artifact | `true` |
 | `upload_sarif` | Upload to GitHub Security tab | `false` |
 | `fail_on_high_risk` | Block merge if over threshold (exit 1) | `false` |
 | `rubrics_dir` | Directory containing rubric YAML files | `.guardspine/rubrics` |
 | `risk_policy` | Path to YAML that overrides risk patterns/thresholds | - |
 | `bundle_dir` | Directory to write evidence bundles | `.guardspine/bundles` |
+| `decision_policy` | Decision engine policy: standard, strict, advisory, or path to custom YAML | `standard` |
+| `deliberate` | Enable deliberation (multi-round cross-checking between AI models) | `false` |
+| `auto_merge` | Auto-merge clean PRs (decision=merge, tier below threshold) | `false` |
+| `auto_merge_method` | Merge method: merge, squash, or rebase | `squash` |
 | **Model Configuration** | | |
 | `model_1` | First model (L1+). Format: `provider/model` or just `model` | Auto-detect |
 | `model_2` | Second model (L2+). Format: `provider/model` or just `model` | Auto-detect |
 | `model_3` | Third model (L3+). Format: `provider/model` or just `model` | Auto-detect |
+| `ai_review` | Enable AI-powered code review | `true` |
 | **API Keys** | | |
 | `openai_api_key` | OpenAI key for GPT models (optional) | - |
 | `anthropic_api_key` | Anthropic key for Claude models (optional) | - |
 | `openrouter_api_key` | OpenRouter key (access 100+ models) (optional) | - |
 | `ollama_host` | Ollama server URL for local AI (optional) | - |
+| `guardspine_api_url` | GuardSpine backend URL for dashboard sync and Slack alerts | - |
+| `guardspine_api_key` | GuardSpine service API key for backend auth | - |
 
 ### Outputs
 
@@ -358,6 +338,9 @@ Export findings to GitHub Security tab:
 | `models_used` | Number of AI models that reviewed |
 | `consensus_risk` | Multi-model consensus: approve/request_changes/comment |
 | `agreement_score` | How much models agreed (0.0-1.0) |
+| `decision` | Decision engine verdict: merge, merge-with-conditions, or block |
+| `merged` | Whether PR was auto-merged |
+| `merge_sha` | Merge commit SHA (if merged) |
 
 ## Advanced Usage
 
@@ -367,6 +350,40 @@ Export findings to GitHub Security tab:
 - uses: DNYoussef/codeguard-action@v1
   with:
     risk_threshold: ${{ github.base_ref == 'main' && 'L2' || 'L3' }}
+```
+
+### Custom Decision Policy
+
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    decision_policy: strict  # or: advisory, standard, path/to/custom.yaml
+```
+
+### Custom Risk Policy
+
+Override file patterns, zone severities, or size thresholds with a YAML file:
+
+```yaml
+# .guardspine/risk-policy.yaml
+file_patterns:
+  L4:
+    - payment
+    - billing
+    - hipaa
+zone_severity:
+  payment: critical
+  auth: critical
+size_thresholds:
+  large: 1000
+  medium: 200
+  small: 50
+```
+
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    risk_policy: .guardspine/risk-policy.yaml
 ```
 
 ### Multi-Model AI Configuration
@@ -380,19 +397,10 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-    model_1: anthropic/claude-4.5-sonnet   # Used for L1+
+    model_1: anthropic/claude-sonnet-4.5   # Used for L1+
     model_2: openai/gpt-5.2                 # Used for L2+
     model_3: google/gemini-3-flash          # Used for L3+
 ```
-
-**Popular OpenRouter models (Jan 2026):**
-| Model | ID | Best For |
-|-------|-----|----------|
-| Claude 4.5 Sonnet | `anthropic/claude-4.5-sonnet` | Fast + quality (default) |
-| Claude 4.5 Opus | `anthropic/claude-4.5-opus` | Best reasoning |
-| GPT 5.2 | `openai/gpt-5.2` | Good balance |
-| Gemini 3 Flash | `google/gemini-3-flash` | Fast, multimodal |
-| Llama 4 70B | `meta-llama/llama-4-70b-instruct` | Open source |
 
 #### Option 2: Ollama (Air-Gapped - 3 local models)
 
@@ -415,46 +423,42 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     ollama_host: http://localhost:11434
-    model_1: claude-4.5-haiku    # Uses Anthropic
-    model_2: gpt-5.2-mini        # Uses OpenAI
-    model_3: llama4              # Uses Ollama
+    model_1: claude-haiku-4-5-20251001  # Uses Anthropic
+    model_2: gpt-4.1-mini               # Uses OpenAI
+    model_3: llama4                      # Uses Ollama
 ```
 
 #### Option 4: Single Provider (legacy/simple)
 
-Just provide one API key - CodeGuard will use default models:
+Just provide one API key -- CodeGuard will use default models:
 
 ```yaml
-# Anthropic only (uses Claude 4.5 Haiku for all tiers)
+# Anthropic only (uses Claude Haiku 4.5 for all tiers)
 - uses: DNYoussef/codeguard-action@v1
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
-# OpenAI only (uses GPT 5.2 Mini for all tiers)
+# OpenAI only (uses GPT 4.1 Mini for all tiers)
 - uses: DNYoussef/codeguard-action@v1
   with:
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
+| Provider | Data Residency | Best For |
+|----------|----------------|----------|
+| **Ollama** | Your infrastructure | Air-gapped/regulated environments |
+| **OpenRouter** | OpenRouter servers | Flexibility, model diversity |
+| **Anthropic** | Anthropic servers | Direct Claude access |
+| **OpenAI** | OpenAI servers | Existing OpenAI users |
+
 #### Ollama Setup (Local/On-Prem - Air-Gapped)
 
-Ollama runs models locally - no data leaves your infrastructure. Perfect for enterprises with strict data residency requirements.
+Ollama runs models locally -- no data leaves your infrastructure. For enterprises with strict data residency requirements.
 
-**Step 1: Install Ollama on your runner**
-
-For self-hosted runners:
-```bash
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull llama3.3
-```
-
-**Step 2: Start Ollama service**
-
-Add a service step before CodeGuard:
 ```yaml
 jobs:
   analyze:
-    runs-on: self-hosted  # or ubuntu-latest with Ollama installed
+    runs-on: self-hosted
     services:
       ollama:
         image: ollama/ollama
@@ -462,36 +466,14 @@ jobs:
           - 11434:11434
     steps:
       - uses: actions/checkout@v4
-
-      # Pull model (one-time setup)
       - name: Pull Ollama model
         run: |
           curl -X POST http://localhost:11434/api/pull -d '{"name": "llama3.3"}'
-
       - uses: DNYoussef/codeguard-action@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ollama_host: http://localhost:11434
           ollama_model: llama4
-```
-
-**Popular Ollama models (Jan 2026):**
-| Model | ID | Size | Best For |
-|-------|-----|------|----------|
-| Llama 4 70B | `llama4` | 40GB | Best quality |
-| Llama 4 8B | `llama4:8b` | 5GB | Fast, balanced |
-| CodeLlama 70B | `codellama-70b` | 40GB | Code-focused |
-| Mistral Large | `mistral-large` | 12GB | Good reasoning |
-| Mixtral 8x22B | `mixtral-8x22b` | 80GB | MoE architecture |
-| Phi-4 | `phi4` | 4GB | Microsoft's compact |
-| Qwen 3 | `qwen3` | 8GB | Multilingual |
-
-**Remote Ollama server:**
-```yaml
-- uses: DNYoussef/codeguard-action@v1
-  with:
-    ollama_host: http://your-ollama-server.internal:11434
-    ollama_model: llama4
 ```
 
 ### Archive Evidence Bundles
@@ -547,6 +529,13 @@ For backward compatibility, legacy `events` + `hash_chain` fields are still emit
     "final_hash": "...",
     "event_count": 3
   },
+  "items": [
+    {"item_id": "event-0000", "content_type": "guardspine/codeguard/pr_submitted", "content_hash": "sha256:..."}
+  ],
+  "immutability_proof": {
+    "hash_chain": [{"sequence": 0, "chain_hash": "sha256:..."}],
+    "root_hash": "sha256:..."
+  },
   "summary": {
     "risk_tier": "L3",
     "requires_approval": true
@@ -575,7 +564,7 @@ docker run --rm -v $(pwd):/data ghcr.io/dnyoussef/guardspine-verify /data/bundle
 
 ![GuardSpine Verifier](docs/verifier-demo.png)
 
-*Cryptographic verification with evidence summary - no trust required*
+*Cryptographic verification with evidence summary -- no trust required*
 
 ```bash
 guardspine-verify evidence-bundle.json
@@ -605,6 +594,10 @@ on:
   pull_request:
     types: [opened, synchronize]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -619,7 +612,7 @@ jobs:
         if: always()
         with:
           name: evidence-bundle
-          path: ${{ steps.codeguard.outputs.bundle_path }}
+          path: .guardspine/bundles/
 EOF
 
 # Step 3: Commit
@@ -631,20 +624,22 @@ git commit -m "Add GuardSpine CodeGuard for PR governance"
 
 | User Request | Configuration |
 |--------------|---------------|
-| "strict governance" | `risk_threshold: L2` |
+| "strict governance" | `risk_threshold: L2, decision_policy: strict` |
 | "only block critical" | `risk_threshold: L4` |
+| "advisory mode" | `decision_policy: advisory` |
 | "we're SOC 2" | `rubric: soc2` |
 | "we handle health data" | `rubric: hipaa` |
 | "we process payments" | `rubric: pci-dss` |
 | "use local AI only" | Add `ollama_host: http://localhost:11434` |
 | "use Claude for analysis" | Add `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` |
+| "auto-merge clean PRs" | `auto_merge: true` |
 
 ### Agent Behavior Guidelines
 
-1. **Always commit workflow files** - Don't just show the YAML, actually create the file
-2. **Use appropriate rubric** - If the codebase has `/auth`, `/payment`, or health-related code, suggest the matching rubric
-3. **Explain outputs** - Tell the user they'll see PR comments and can find bundles in workflow artifacts
-4. **Don't overclaim** - Say "evidence mappings for audit support" not "makes you compliant"
+1. **Always commit workflow files** -- do not just show the YAML, actually create the file
+2. **Use appropriate rubric** -- if the codebase has `/auth`, `/payment`, or health-related code, suggest the matching rubric
+3. **Explain outputs** -- tell the user they will see PR comments and can find bundles in workflow artifacts
+4. **Do not overclaim** -- say "evidence mappings for audit support" not "makes you compliant"
 
 ### Detecting Existing Installation
 
@@ -672,7 +667,7 @@ Every AI code review sends diff content to language models. That diff might cont
 - **PII** in test fixtures, seed data, or log format strings
 - **Internal hostnames** and infrastructure details in config files
 
-Without sanitization, these secrets get forwarded to whichever AI provider you've configured -- OpenRouter, Anthropic, OpenAI, or any other third party. Even with Ollama (local models), secrets persist in evidence bundles that may be stored for years and shared with auditors.
+Without sanitization, these secrets get forwarded to whichever AI provider you have configured -- OpenRouter, Anthropic, OpenAI, or any other third party. Even with Ollama (local models), secrets persist in evidence bundles that may be stored for years and shared with auditors.
 
 PII-Shield solves this by detecting high-entropy strings using **Shannon entropy analysis** combined with **bigram frequency detection** (real secrets have different character distribution than code identifiers). Detected secrets are replaced with deterministic HMAC tokens (`[HIDDEN:a1b2c3]`) so the same secret always maps to the same token within a bundle -- preserving referential integrity without exposing the underlying value.
 
@@ -684,44 +679,6 @@ PII-Shield solves this by detecting high-entropy strings using **Shannon entropy
 - **Deterministic HMAC redaction** -- same input always produces same token (keyed by org-wide salt)
 - **Zero-config deployment** -- runs as a K8s sidecar or standalone HTTP service
 - **Sub-millisecond latency** -- Go implementation, no external dependencies
-
-### Installing PII-Shield
-
-**Option 1: Kubernetes sidecar (recommended for production)**
-
-```yaml
-# In your deployment manifest
-containers:
-  - name: pii-shield
-    image: ghcr.io/aragossa/pii-shield:latest
-    ports:
-      - containerPort: 8080
-    env:
-      - name: PII_SALT
-        valueFrom:
-          secretKeyRef:
-            name: pii-shield-config
-            key: salt
-```
-
-**Option 2: Docker standalone**
-
-```bash
-docker run -d -p 8080:8080 \
-  -e PII_SALT=your-org-wide-salt \
-  ghcr.io/aragossa/pii-shield:latest
-```
-
-**Option 3: Local mode (no server needed)**
-
-CodeGuard includes a built-in local entropy detector that runs entirely within the GitHub Action runner. No PII-Shield server required -- just enable it:
-
-```yaml
-pii_shield_enabled: true
-# No endpoint = local mode (entropy detection only, no HMAC)
-```
-
-Local mode uses Shannon entropy analysis to flag high-entropy strings but cannot produce deterministic HMAC tokens (since there's no shared salt). Use remote mode for cross-bundle token consistency.
 
 ### Where PII-Shield Runs in the Pipeline
 
@@ -741,23 +698,22 @@ PR Diff (raw)
         +-- SARIF output (sanitized)
 ```
 
-The raw diff is **never** modified. PII-Shield operates on copies sent to AI models and external outputs. The evidence bundle's hash chain covers the sanitized content, so verification remains valid.
+The raw diff is **never** modified. PII-Shield operates on copies sent to AI models and external outputs. The evidence bundle hash chain covers the sanitized content, so verification remains valid.
 
-### Configuration
+### PII-Shield Configuration
 
 ```yaml
 - uses: DNYoussef/codeguard-action@v1
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-    # PII-Shield configuration
     pii_shield_enabled: true
     pii_shield_endpoint: https://pii-shield.your-org.internal/sanitize
     pii_shield_salt_fingerprint: sha256:your-org-salt-fingerprint
-    pii_shield_fail_closed: true           # fail the action on sanitization error
-    pii_shield_sanitize_comments: true     # sanitize PR comment body
-    pii_shield_sanitize_bundle: true       # sanitize evidence bundle content
-    pii_shield_sanitize_sarif: true        # sanitize SARIF findings
+    pii_shield_fail_closed: true
+    pii_shield_sanitize_comments: true
+    pii_shield_sanitize_bundle: true
+    pii_shield_sanitize_sarif: true
   env:
     PII_SHIELD_API_KEY: ${{ secrets.PII_SHIELD_API_KEY }}
 ```
@@ -793,20 +749,34 @@ The HMAC salt used by PII-Shield **must be the same across all services** in you
 
 Store the salt in a shared secret manager (Vault, AWS Secrets Manager, K8s Secret) and reference it from all services.
 
-### Across the GuardSpine Ecosystem
+---
 
-PII-Shield is integrated across the entire GuardSpine stack:
+## Source Layout
 
-| Component | What Gets Sanitized | Status |
-|-----------|---------------------|--------|
-| **codeguard-action** | PR diffs, comments, bundles, SARIF | Active |
-| **guardspine-verify** | Validates sanitization attestations | Active |
-| **rlm-docsync** | Documentation claims and evidence packs | Active |
-| **guardspine-local-council** | Prompts sent to local Ollama models | Active |
-| **guardspine-adapter-webhook** | Webhook payloads before bundle creation | Active |
-| **guardspine-spec** | Defines the sanitization attestation schema (v0.2.1) | Active |
-
-All components produce a standardized `sanitization` attestation block (GuardSpine spec v0.2.1) documenting the engine, method, redaction count, and token format. The verifier checks this attestation for consistency.
+```
+codeguard-action/
+  action.yml              GitHub Action definition (inputs, outputs, Docker)
+  entrypoint.py           Main entrypoint, wires all components
+  requirements.txt        Python dependencies
+  Dockerfile              Docker image for GitHub Actions
+  src/
+    analyzer.py           Diff parser, sensitive zone detection, multi-model AI review
+    risk_classifier.py    Risk tier classification (L0-L4), rubric evaluation
+    decision_engine.py    Findings -> verdict (vendored from guardspine-product)
+    bundle_generator.py   Evidence bundle creation (guardspine-spec v0.2.0)
+    pr_commenter.py       Decision Card rendering and posting
+    sarif_exporter.py     SARIF output for GitHub Security tab
+    canonical_json.py     RFC 8785 canonical JSON serialization
+    pii_shield.py         PII-Shield client (local + remote modes)
+    decision_profiles/    YAML policy files (standard, strict, advisory)
+    adapters/
+      pii_wasm_client.py  WASM-based PII-Shield for local mode
+  rubrics/
+    builtin/              Shipped rubric YAML files (soc2, hipaa, pci-dss, etc.)
+  tests/                  Test suite
+  eval/                   Evaluation harness
+  docs/                   Documentation and demo images
+```
 
 ---
 
@@ -816,13 +786,16 @@ All components produce a standardized `sanitization` attestation block (GuardSpi
 A: No. CodeGuard adds *evidence* to your existing review process. Humans still review; GuardSpine proves what they saw.
 
 **Q: What if I disagree with the risk tier?**
-A: The tier is based on file patterns and content analysis. You can adjust the threshold or create custom rubrics.
+A: The tier is based on file patterns, zone detection, and change size. You can adjust the threshold, create custom rubrics, or override risk patterns with a `risk_policy` YAML file.
+
+**Q: Can AI block my PR?**
+A: No. AI-generated findings are marked as opinions (non-provable). They can trigger `merge-with-conditions` to surface concerns for human review, but only provable deterministic findings can `block` a PR. This is enforced by the decision engine.
 
 **Q: Is my code sent anywhere?**
 A: Diffs are analyzed locally in the GitHub runner. AI features (optional) send diffs to your configured AI provider. Enable [PII-Shield](#pii-shield-integration) to automatically strip secrets and PII before anything leaves the runner.
 
 **Q: Do I need PII-Shield?**
-A: If you use AI review (OpenRouter, Anthropic, OpenAI), PII-Shield prevents secrets in diffs from reaching third-party APIs. If you only use Ollama (local), PII-Shield still sanitizes evidence bundles that may be stored long-term or shared with auditors. It's optional but strongly recommended for production.
+A: If you use AI review (OpenRouter, Anthropic, OpenAI), PII-Shield prevents secrets in diffs from reaching third-party APIs. If you only use Ollama (local), PII-Shield still sanitizes evidence bundles that may be stored long-term or shared with auditors. It is optional but strongly recommended for production.
 
 **Q: How long should I keep bundles?**
 A: SOC 2 typically requires 1 year, HIPAA 6 years, PCI-DSS varies. Consult your compliance team.
@@ -833,10 +806,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License -- see [LICENSE](LICENSE) for details.
 
 ---
 
-**GuardSpine** - Evidence infrastructure for AI-mediated work.
+**GuardSpine** -- Evidence infrastructure for AI-mediated work.
 
-[Website](https://guardspine.io) | [Docs](https://docs.guardspine.io) | [Support](mailto:support@guardspine.io)
+[Website](https://guardspine.ai) | [Docs](https://docs.guardspine.ai)

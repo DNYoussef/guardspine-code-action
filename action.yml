@@ -47,7 +47,7 @@ inputs:
   openrouter_model:
     description: 'Model to use with OpenRouter (e.g., anthropic/claude-sonnet-4, google/gemini-3)'
     required: false
-    default: 'anthropic/claude-sonnet-4'
+    default: 'anthropic/claude-sonnet-4.5'
   ollama_host:
     description: 'Ollama server URL for local/on-prem AI (e.g., http://localhost:11434)'
     required: false
@@ -137,6 +137,12 @@ inputs:
     description: 'Merge method: merge, squash, or rebase'
     required: false
     default: 'squash'
+  guardspine_api_url:
+    description: 'GuardSpine backend URL (e.g., https://app.guardspine.ai/api/v1). Enables dashboard sync and Slack alerts.'
+    required: false
+  guardspine_api_key:
+    description: 'GuardSpine service API key for backend authentication'
+    required: false
 
 outputs:
   risk_tier:
@@ -164,7 +170,7 @@ outputs:
 
 runs:
   using: 'docker'
-  image: 'Dockerfile'
+  image: 'docker://ghcr.io/dnyoussef/codeguard-action:main'
   args:
     - ${{ inputs.risk_threshold }}
     - ${{ inputs.rubric }}

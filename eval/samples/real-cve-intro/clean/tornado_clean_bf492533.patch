@@ -1,0 +1,21 @@
+diff --git a/requirements.txt b/requirements.txt
+index e496bc72..fc4c9010 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -61,6 +61,7 @@ packaging==25.0
+     #   pyproject-api
+     #   sphinx
+     #   tox
++    #   wheel
+ pathspec==0.12.1
+     # via black
+ pip-tools==7.4.1
+@@ -121,7 +122,7 @@ urllib3==2.6.3
+     # via requests
+ virtualenv==20.36.1
+     # via tox
+-wheel==0.45.1
++wheel==0.46.2
+     # via pip-tools
+ 
+ # The following packages are considered to be unsafe in a requirements file:

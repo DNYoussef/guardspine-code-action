@@ -9,11 +9,13 @@ import json
 import os
 import sys
 import hashlib
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from github import Github
+from github import Auth, Github
 from github.PullRequest import PullRequest
 
 from src.analyzer import DiffAnalyzer
@@ -166,6 +168,33 @@ def _record_sanitization_stage(
     return summary
 
 
+def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict) -> bool:
+    """POST JSON to the GuardSpine backend. Returns True on success."""
+    url = api_url.rstrip("/") + path
+    body = json.dumps(payload, default=str).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        resp.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:200]
+        print(f"::warning::GuardSpine backend POST {path} failed ({exc.code}): {detail}")
+    except urllib.error.URLError as exc:
+        print(f"::warning::GuardSpine backend unreachable ({path}): {exc.reason}")
+    except Exception as exc:
+        print(f"::warning::GuardSpine backend POST {path} error: {exc}")
+    return False
+
+
 def main():
     """Main entrypoint for the action."""
     # Parse inputs from environment (set by GitHub Actions)
@@ -181,7 +210,7 @@ def main():
     openai_key = get_env("INPUT_OPENAI_API_KEY") or get_env("OPENAI_API_KEY")
     anthropic_key = get_env("INPUT_ANTHROPIC_API_KEY") or get_env("ANTHROPIC_API_KEY")
     openrouter_key = get_env("INPUT_OPENROUTER_API_KEY") or get_env("OPENROUTER_API_KEY")
-    openrouter_model = get_env("INPUT_OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
+    openrouter_model = get_env("INPUT_OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
 
     # Ollama for local/on-prem AI (no API key needed)
     ollama_host = get_env("INPUT_OLLAMA_HOST") or get_env("OLLAMA_HOST")
@@ -213,7 +242,6 @@ def main():
     )
     # Forward PII_SAFE_REGEX_LIST to the PII-Shield sidecar via env var
     # (v1.2.0+ reads this to bypass entropy checks for whitelisted patterns)
-    import os
     os.environ["PII_SAFE_REGEX_LIST"] = pii_safe_regex_list
     pii_client = PIIShieldClient(
         enabled=pii_shield_enabled,
@@ -229,6 +257,10 @@ def main():
     # Auto-merge
     auto_merge = parse_bool(get_env("INPUT_AUTO_MERGE", "false"))
     auto_merge_method = get_env("INPUT_AUTO_MERGE_METHOD", "squash")
+
+    # GuardSpine backend integration (dashboard sync + Slack alerts)
+    guardspine_api_url = get_env("INPUT_GUARDSPINE_API_URL")
+    guardspine_api_key = get_env("INPUT_GUARDSPINE_API_KEY")
 
     # Decision policy
     decision_policy_raw = get_env("INPUT_DECISION_POLICY", "standard")
@@ -305,7 +337,7 @@ def main():
     print("::endgroup::")
 
     # Initialize GitHub client
-    gh = Github(github_token)
+    gh = Github(auth=Auth.Token(github_token))
     repo = gh.get_repo(github_repository)
     pr = repo.get_pull(pr_number)
 
@@ -359,6 +391,15 @@ def main():
         model_3=model_3,
         ai_review=ai_review,
     )
+    # Log AI configuration for diagnostics
+    print(f"AI review enabled: {ai_review}")
+    configured_models = getattr(analyzer, "models", [])
+    print(f"AI providers configured: {len(configured_models)}")
+    for provider, model in configured_models:
+        print(f"  - {provider}/{model}")
+    if not configured_models:
+        print("::warning::No AI providers configured (no API keys found)")
+
     analysis = analyzer.analyze(
         raw_diff_content,
         rubric=rubric,
@@ -382,6 +423,21 @@ def main():
     print(f"Files changed: {analysis['files_changed']}")
     print(f"Lines added: {analysis['lines_added']}")
     print(f"Lines removed: {analysis['lines_removed']}")
+
+    # Log AI review results
+    mmr = analysis.get("multi_model_review") or {}
+    models_used = mmr.get("models_used", 0)
+    models_failed = mmr.get("models_failed", 0)
+    model_errors = mmr.get("model_errors", [])
+    tier_from_analysis = analysis.get("preliminary_tier", "?")
+    print(f"Preliminary tier: {tier_from_analysis}")
+    print(f"AI models used: {models_used}, failed: {models_failed}")
+    if model_errors:
+        for err in model_errors:
+            print(f"::warning::AI model error: {err}")
+    reason = mmr.get("reason")
+    if reason:
+        print(f"AI review note: {reason}")
     print("::endgroup::")
 
     # Classify risk
@@ -490,8 +546,12 @@ def main():
                 print(f"::warning::PII-Shield error in comment sanitization: {exc}")
                 if pii_shield_fail_closed:
                     sys.exit(1)
-        commenter.post_decision_card(comment_body)
-        print("Decision Card posted")
+        try:
+            commenter.post_decision_card(comment_body)
+            print("Decision Card posted")
+        except Exception as exc:
+            print(f"::warning::Failed to post PR comment (check GITHUB_TOKEN permissions): {exc}")
+            print("::warning::Ensure workflow has 'permissions: pull-requests: write'")
         print("::endgroup::")
 
     # Generate evidence bundle
@@ -557,6 +617,14 @@ def main():
         set_output("bundle_path", str(relative_bundle))
         print(f"Bundle saved: {relative_bundle}")
         print(f"Bundle ID: {bundle['bundle_id']}")
+
+        # Sync bundle to GuardSpine dashboard
+        if guardspine_api_url and guardspine_api_key:
+            if _post_to_backend(guardspine_api_url, guardspine_api_key, "/bundles/import", bundle):
+                print(f"Bundle synced to GuardSpine dashboard")
+            else:
+                print("::warning::Bundle saved locally but dashboard sync failed")
+
         print("::endgroup::")
 
         # Upload as artifact
@@ -598,6 +666,23 @@ def main():
 
         print(f"SARIF saved: {sarif_path}")
         print("::endgroup::")
+
+    # Sync approval record to GuardSpine backend (triggers Slack + escalation)
+    if guardspine_api_url and guardspine_api_key and generate_bundle and bundle_path:
+        approval_payload = {
+            "repository": github_repository,
+            "pr_number": pr_number,
+            "commit_sha": github_sha,
+            "risk_tier": risk_tier,
+            "decision": decision_packet.decision,
+            "bundle_id": bundle.get("bundle_id", ""),
+            "findings_count": len(findings) if findings else 0,
+            "hard_blocks": len(decision_packet.hard_blocks),
+            "conditions": len(decision_packet.conditions) if hasattr(decision_packet, "conditions") else 0,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if _post_to_backend(guardspine_api_url, guardspine_api_key, "/approvals", approval_payload):
+            print("Approval record synced to GuardSpine")
 
     # Determine exit status (decision engine is authoritative)
     if decision_packet.decision == "block":
@@ -671,6 +756,43 @@ def _map_findings(finding_dicts: list[dict]) -> list[AuditFinding]:
     return mapped
 
 
+# --- Guard Lane Routing (document governance) ---
+
+# Extension-to-lane mapping for non-code file types.
+# Files not matching any lane use the default code review pipeline.
+_EXTENSION_LANES: dict[str, str] = {
+    ".pdf": "pdf",
+    ".xlsx": "sheet",
+    ".xlsm": "sheet",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".bmp": "image",
+    ".tiff": "image",
+}
+
+
+def detect_guard_lane(filename: str) -> Optional[str]:
+    """Return the guard lane for *filename* based on its extension.
+
+    Returns ``None`` when the file should use the default code lane.
+    """
+    ext = Path(filename).suffix.lower()
+    return _EXTENSION_LANES.get(ext)
+
+
+def group_files_by_lane(filenames: list[str]) -> dict[Optional[str], list[str]]:
+    """Group *filenames* by their guard lane.
+
+    Returns a dict keyed by lane name (or ``None`` for the default code lane).
+    """
+    groups: dict[Optional[str], list[str]] = {}
+    for name in filenames:
+        lane = detect_guard_lane(name)
+        groups.setdefault(lane, []).append(name)
+    return groups
+
+
 def fetch_pr_diff(pr: PullRequest) -> str:
     """Fetch the diff content for a PR."""
     stub_path = os.environ.get("STUB_DIFF_PATH")
@@ -686,20 +808,51 @@ def fetch_pr_diff(pr: PullRequest) -> str:
 
     import requests
 
-    diff_url = pr.diff_url
+    # Use the API URL (pr.url) instead of pr.diff_url (web URL).
+    # The web URL (github.com/...pull/N.diff) returns 404 on private repos
+    # even with a Bearer token. The API URL works for both public and private.
+    diff_url = pr.url
     token = (
         os.environ.get("INPUT_GITHUB_TOKEN")
         or os.environ.get("GITHUB_TOKEN")
     )
     headers = {
-        "Accept": "application/vnd.github.v3.diff",
+        "Accept": "application/vnd.github.diff",
     }
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
     response = requests.get(diff_url, headers=headers, timeout=30)
+    if response.status_code == 406:
+        # Large diffs may not be available via API; fall back to per-file patches.
+        print("::warning::Diff too large for single API response, fetching per-file patches")
+        return _fetch_pr_diff_paginated(pr, token)
     response.raise_for_status()
     return response.text
+
+
+def _fetch_pr_diff_paginated(pr, token: str | None) -> str:
+    """Fetch diff by iterating over PR files when the full diff is too large."""
+    import requests
+
+    parts: list[str] = []
+    page = 1
+    while True:
+        url = f"{pr.url}/files?per_page=100&page={page}"
+        headers = {"Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        files = resp.json()
+        if not files:
+            break
+        for f in files:
+            patch = f.get("patch", "")
+            if patch:
+                parts.append(f"diff --git a/{f['filename']} b/{f['filename']}\n{patch}")
+        page += 1
+    return "\n".join(parts)
 
 
 def set_output(name: str, value: str):

@@ -1,0 +1,63 @@
+diff --git a/CHANGES/11859.bugfix.rst b/CHANGES/11859.bugfix.rst
+new file mode 100644
+index 00000000..1efb2681
+--- /dev/null
++++ b/CHANGES/11859.bugfix.rst
+@@ -0,0 +1 @@
++Removed support for ``ClientTimeout(total=0)`` to disable timeouts. Use ``None`` instead of ``0`` to disable the total timeout. Passing ``0`` now raises :exc:`ValueError` with a clear error message -- by :user:`veeceey`.
+diff --git a/aiohttp/client.py b/aiohttp/client.py
+index 26e67d49..555d5678 100644
+--- a/aiohttp/client.py
++++ b/aiohttp/client.py
+@@ -240,6 +240,14 @@ class ClientTimeout:
+     # - or use https://docs.python.org/3/library/dataclasses.html#dataclasses.replace
+     # to overwrite the defaults
+ 
++    def __post_init__(self) -> None:
++        if self.total is not None and self.total == 0:
++            raise ValueError(
++                "total timeout must be a positive number or None to disable, "
++                "got 0. Using 0 to disable timeouts is no longer supported, "
++                "use None instead."
++            )
++
+ 
+ # 5 Minute default read timeout
+ DEFAULT_TIMEOUT: Final[ClientTimeout] = ClientTimeout(total=5 * 60, sock_connect=30)
+diff --git a/tests/test_connector.py b/tests/test_connector.py
+index f73862e4..cb156cef 100644
+--- a/tests/test_connector.py
++++ b/tests/test_connector.py
+@@ -1492,7 +1492,7 @@ async def test_tcp_connector_cancel_dns_error_captured(
+         )
+         m_resolver().resolve.return_value = dns_response_error()
+         m_resolver().close = mock.AsyncMock()
+-        f = loop.create_task(conn._create_direct_connection(req, [], ClientTimeout(0)))
++        f = loop.create_task(conn._create_direct_connection(req, [], ClientTimeout()))
+ 
+         await asyncio.sleep(0)
+         f.cancel()
+@@ -2654,6 +2654,23 @@ async def test_start_tls_exception_with_ssl_shutdown_timeout_nonzero_pre_311(
+     underlying_transport.abort.assert_not_called()
+ 
+ 
++def test_client_timeout_total_zero_raises() -> None:
++    """Test that ClientTimeout(total=0) raises ValueError.
++
++    Related to https://github.com/aio-libs/aiohttp/issues/11859
++    Using total=0 to disable timeouts is no longer supported in v4,
++    use None instead.
++    """
++    with pytest.raises(ValueError, match="total timeout must be a positive number"):
++        ClientTimeout(total=0)
++
++
++def test_client_timeout_total_none_is_valid() -> None:
++    """Test that ClientTimeout(total=None) is still valid for disabling timeouts."""
++    timeout = ClientTimeout(total=None)
++    assert timeout.total is None
++
++
+ async def test_invalid_ssl_param() -> None:
+     with pytest.raises(TypeError):
+         aiohttp.TCPConnector(ssl=object())  # type: ignore[arg-type]

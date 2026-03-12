@@ -1,0 +1,11 @@
+diff --git a/rest_framework/templatetags/rest_framework.py b/rest_framework/templatetags/rest_framework.py
+index dba8153b..e01568cf 100644
+--- a/rest_framework/templatetags/rest_framework.py
++++ b/rest_framework/templatetags/rest_framework.py
+@@ -322,5 +322,5 @@ def break_long_headers(header):
+     when possible (are comma separated)
+     """
+     if len(header) > 160 and ',' in header:
+-        header = mark_safe('<br> ' + ', <br>'.join(escape(header).split(',')))
++        header = mark_safe('<br> ' + ', <br>'.join(header.split(',')))
+     return header

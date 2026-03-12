@@ -1,0 +1,28 @@
+diff --git a/django/core/validators.py b/django/core/validators.py
+index 2092b52cd6..82e8db3e9c 100644
+--- a/django/core/validators.py
++++ b/django/core/validators.py
+@@ -97,7 +97,9 @@ class URLValidator(RegexValidator):
+             self.schemes = schemes
+ 
+     def __call__(self, value):
+-        # Check first if the scheme is valid
++        if not isinstance(value, str):
++            raise ValidationError(self.message, code=self.code)
++        # Check if the scheme is valid.
+         scheme = value.split('://')[0].lower()
+         if scheme not in self.schemes:
+             raise ValidationError(self.message, code=self.code)
+diff --git a/tests/validators/tests.py b/tests/validators/tests.py
+index baa744a9a6..5127bfecf5 100644
+--- a/tests/validators/tests.py
++++ b/tests/validators/tests.py
+@@ -222,6 +222,8 @@ TEST_DATA = [
+     (URLValidator(EXTENDED_SCHEMES), 'git+ssh://git@github.com/example/hg-git.git', None),
+ 
+     (URLValidator(EXTENDED_SCHEMES), 'git://-invalid.com', ValidationError),
++    (URLValidator(), None, ValidationError),
++    (URLValidator(), 56, ValidationError),
+     (URLValidator(), 'no_scheme', ValidationError),
+     # Trailing newlines not accepted
+     (URLValidator(), 'http://www.djangoproject.com/\n', ValidationError),

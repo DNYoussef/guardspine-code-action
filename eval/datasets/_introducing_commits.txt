@@ -1,0 +1,20 @@
+CVE-2023-36053	9c19aff7c7561e3a82978a272ecdaad40dda5c00	9c19aff7c75 Refs #33476 -- Reformatted code with Black.
+CVE-2023-43665	9c19aff7c7561e3a82978a272ecdaad40dda5c00	9c19aff7c75 Refs #33476 -- Reformatted code with Black.
+CVE-2023-31047	54febdb8be7c9793caae9c781f4d6b7cbbdcd900	54febdb8be7 Fixed #26604 -- Added a multiple file upload example to topics/http/file-uploads.txt.
+CVE-2024-24680	fb537e177d7d304d6642ee6005258a82584a8032	fb537e177d7 Added django.contrib.humanize, a set of template tags for adding a 'human touch' to data. They're documented in add_ons.txt.
+CVE-2024-39614	8c660fb59239828583f17cdede3b64f208b8752c	8c660fb5923 Fixed CVE-2023-23969 -- Prevented DoS with pathological values for Accept-Language.
+CVE-2024-34069	d2d3869525a4ffb2c41dfb2c0e39d94dab2d870c	d2d38695 endpoint type is Any (#2895)
+CVE-2023-32681	302225334678490ec66b3614a9dddb8a02c5f4fe	302225334678 test on pypy 3.8 and pypy 3.9 on windows and macos (#6424)
+CVE-2024-23334	9e14ea19b5a48bb26797babc32202605066cb5f5	9e14ea19 Tightening the runtime type check for ssl (#7698)
+CVE-2024-23829	9e14ea19b5a48bb26797babc32202605066cb5f5	9e14ea19 Tightening the runtime type check for ssl (#7698)
+CVE-2024-21520	fe92f0dd0d4c587eed000c7de611ddbff241bd6a	fe92f0dd Add `__hash__` method for `permissions.OperandHolder` class (#9417)
+CVE-2024-37891	29cfd02f66376c61bd20f1725477925106321f68	29cfd02f Fix handling of OpenSSL 3.2.0 new error message "record layer failure" (#3405)
+CVE-2016-9015	4c0fcafce3c418e2ddcb78a1c865820d6ed6703f	4c0fcafc Add initial PyOpenSSL wrapper context.
+CVE-2024-56326	0871c71d0166152801798c1e59b3b32d3fb7469e	0871c71 rearrange change entry
+CVE-2016-10745	5cdc1ac3d936f54811422c1b78b33dd0fa37a317	5cdc1ac3 documentation update
+CVE-2022-24302	aa3cc6fa3e9f1df72d4ffd2d5fc02ae734a6cba4	aa3cc6fa Cut 2.10.0
+CVE-2018-7750	9d5760cf45619ce5aacb567fdc42849d678d93eb	9d5760cf Additional house style formatting tweaks, mostly re: removal of line continuations
+CVE-2024-26130	NOTFOUND	fix-only-adds
+CVE-2026-26007	4398f19e0700ffb1bb1e13be4f8efe7271feb62a	4398f19e0 See if loading the base provider is actually required (#10421)
+CVE-2023-28370	NOTFOUND	fix-only-adds
+CVE-2014-9720	e8dc5e427d2e244c519c4211fb1796e747b77ed1	e8dc5e42 Add cython-based speedup for websocket mask function.

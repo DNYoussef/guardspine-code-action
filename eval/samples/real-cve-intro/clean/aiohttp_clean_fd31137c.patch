@@ -1,0 +1,39 @@
+diff --git a/requirements/constraints.txt b/requirements/constraints.txt
+index 2f83390a..b2c697a2 100644
+--- a/requirements/constraints.txt
++++ b/requirements/constraints.txt
+@@ -275,7 +275,7 @@ uvloop==0.21.0 ; platform_system != "Windows"
+     #   -r requirements/lint.in
+ valkey==6.1.1
+     # via -r requirements/lint.in
+-virtualenv==20.36.1
++virtualenv==20.37.0
+     # via pre-commit
+ wait-for-it==2.3.0
+     # via -r requirements/test-common.in
+diff --git a/requirements/dev.txt b/requirements/dev.txt
+index da68c301..d427e089 100644
+--- a/requirements/dev.txt
++++ b/requirements/dev.txt
+@@ -265,7 +265,7 @@ uvloop==0.21.0 ; platform_system != "Windows" and implementation_name == "cpytho
+     #   -r requirements/lint.in
+ valkey==6.1.1
+     # via -r requirements/lint.in
+-virtualenv==20.36.1
++virtualenv==20.37.0
+     # via pre-commit
+ wait-for-it==2.3.0
+     # via -r requirements/test-common.in
+diff --git a/requirements/lint.txt b/requirements/lint.txt
+index a87b5490..26ee7273 100644
+--- a/requirements/lint.txt
++++ b/requirements/lint.txt
+@@ -123,7 +123,7 @@ uvloop==0.21.0 ; platform_system != "Windows"
+     # via -r requirements/lint.in
+ valkey==6.1.1
+     # via -r requirements/lint.in
+-virtualenv==20.36.1
++virtualenv==20.37.0
+     # via pre-commit
+ zlib-ng==1.0.0
+     # via -r requirements/lint.in

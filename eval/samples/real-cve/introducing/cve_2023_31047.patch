@@ -1,0 +1,561 @@
+diff --git a/django/contrib/admin/widgets.py b/django/contrib/admin/widgets.py
+index 2c7ac5c794..eb7f217a9a 100644
+--- a/django/contrib/admin/widgets.py
++++ b/django/contrib/admin/widgets.py
+@@ -85,20 +85,12 @@ class AdminRadioFieldRenderer(RadioFieldRenderer):
+ class AdminRadioSelect(forms.RadioSelect):
+     renderer = AdminRadioFieldRenderer
+ 
+-class AdminFileWidget(forms.FileInput):
+-    """
+-    A FileField Widget that shows its current value if it has one.
+-    """
+-    def __init__(self, attrs={}):
+-        super(AdminFileWidget, self).__init__(attrs)
++class AdminFileWidget(forms.ClearableFileInput):
++    template_with_initial = (u'<p class="file-upload">%s</p>'
++                            % forms.ClearableFileInput.template_with_initial)
++    template_with_clear = (u'<span class="clearable-file-input">%s</span>'
++                           % forms.ClearableFileInput.template_with_clear)
+ 
+-    def render(self, name, value, attrs=None):
+-        output = []
+-        if value and hasattr(value, "url"):
+-            output.append('%s <a target="_blank" href="%s">%s</a> <br />%s ' % \
+-                (_('Currently:'), value.url, value, _('Change:')))
+-        output.append(super(AdminFileWidget, self).render(name, value, attrs))
+-        return mark_safe(u''.join(output))
+ 
+ class ForeignKeyRawIdWidget(forms.TextInput):
+     """
+diff --git a/django/db/models/fields/files.py b/django/db/models/fields/files.py
+index 6dfeddbc41..9ee523b9d5 100644
+--- a/django/db/models/fields/files.py
++++ b/django/db/models/fields/files.py
+@@ -282,7 +282,15 @@ class FileField(Field):
+         return os.path.join(self.get_directory_name(), self.get_filename(filename))
+ 
+     def save_form_data(self, instance, data):
+-        if data:
++        # Important: None means "no change", other false value means "clear"
++        # This subtle distinction (rather than a more explicit marker) is
++        # needed because we need to consume values that are also sane for a
++        # regular (non Model-) Form to find in its cleaned_data dictionary.
++        if data is not None:
++            # This value will be converted to unicode and stored in the
++            # database, so leaving False as-is is not acceptable.
++            if not data:
++                data = ''
+             setattr(instance, self.name, data)
+ 
+     def formfield(self, **kwargs):
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index de14a5c8a8..03455e0989 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -27,8 +27,9 @@ from django.core.validators import EMPTY_VALUES
+ 
+ from util import ErrorList
+ from widgets import TextInput, PasswordInput, HiddenInput, MultipleHiddenInput, \
+-        FileInput, CheckboxInput, Select, NullBooleanSelect, SelectMultiple, \
+-        DateInput, DateTimeInput, TimeInput, SplitDateTimeWidget, SplitHiddenDateTimeWidget
++        ClearableFileInput, CheckboxInput, Select, NullBooleanSelect, SelectMultiple, \
++        DateInput, DateTimeInput, TimeInput, SplitDateTimeWidget, SplitHiddenDateTimeWidget, \
++        FILE_INPUT_CONTRADICTION
+ 
+ __all__ = (
+     'Field', 'CharField', 'IntegerField',
+@@ -108,6 +109,9 @@ class Field(object):
+         if self.localize:
+             widget.is_localized = True
+ 
++        # Let the widget know whether it should display as required.
++        widget.is_required = self.required
++
+         # Hook into self.widget_attrs() for any Field-specific HTML attributes.
+         extra_attrs = self.widget_attrs(widget)
+         if extra_attrs:
+@@ -167,6 +171,17 @@ class Field(object):
+         self.run_validators(value)
+         return value
+ 
++    def bound_data(self, data, initial):
++        """
++        Return the value that should be shown for this field on render of a
++        bound form, given the submitted POST data for the field and the initial
++        data, if any.
++
++        For most fields, this will simply be data; FileFields need to handle it
++        a bit differently.
++        """
++        return data
++
+     def widget_attrs(self, widget):
+         """
+         Given a Widget instance (*not* a Widget class), returns a dictionary of
+@@ -434,12 +449,13 @@ class EmailField(CharField):
+     default_validators = [validators.validate_email]
+ 
+ class FileField(Field):
+-    widget = FileInput
++    widget = ClearableFileInput
+     default_error_messages = {
+         'invalid': _(u"No file was submitted. Check the encoding type on the form."),
+         'missing': _(u"No file was submitted."),
+         'empty': _(u"The submitted file is empty."),
+         'max_length': _(u'Ensure this filename has at most %(max)d characters (it has %(length)d).'),
++        'contradiction': _(u'Please either submit a file or check the clear checkbox, not both.')
+     }
+ 
+     def __init__(self, *args, **kwargs):
+@@ -468,10 +484,29 @@ class FileField(Field):
+         return data
+ 
+     def clean(self, data, initial=None):
++        # If the widget got contradictory inputs, we raise a validation error
++        if data is FILE_INPUT_CONTRADICTION:
++            raise ValidationError(self.error_messages['contradiction'])
++        # False means the field value should be cleared; further validation is
++        # not needed.
++        if data is False:
++            if not self.required:
++                return False
++            # If the field is required, clearing is not possible (the widget
++            # shouldn't return False data in that case anyway). False is not
++            # in validators.EMPTY_VALUES; if a False value makes it this far
++            # it should be validated from here on out as None (so it will be
++            # caught by the required check).
++            data = None
+         if not data and initial:
+             return initial
+         return super(FileField, self).clean(data)
+ 
++    def bound_data(self, data, initial):
++        if data in (None, FILE_INPUT_CONTRADICTION):
++            return initial
++        return data
++
+ class ImageField(FileField):
+     default_error_messages = {
+         'invalid_image': _(u"Upload a valid image. The file you uploaded was either not an image or a corrupted image."),
+diff --git a/django/forms/forms.py b/django/forms/forms.py
+index 13ef1a7682..0377de4767 100644
+--- a/django/forms/forms.py
++++ b/django/forms/forms.py
+@@ -437,10 +437,8 @@ class BoundField(StrAndUnicode):
+             if callable(data):
+                 data = data()
+         else:
+-            if isinstance(self.field, FileField) and self.data is None:
+-                data = self.form.initial.get(self.name, self.field.initial)
+-            else:
+-                data = self.data
++            data = self.field.bound_data(
++                self.data, self.form.initial.get(self.name, self.field.initial))
+         data = self.field.prepare_value(data)
+ 
+         if not only_initial:
+diff --git a/django/forms/widgets.py b/django/forms/widgets.py
+index 2e16c35d8b..cb12586d6c 100644
+--- a/django/forms/widgets.py
++++ b/django/forms/widgets.py
+@@ -7,7 +7,7 @@ from itertools import chain
+ from django.conf import settings
+ from django.utils.datastructures import MultiValueDict, MergeDict
+ from django.utils.html import escape, conditional_escape
+-from django.utils.translation import ugettext
++from django.utils.translation import ugettext, ugettext_lazy
+ from django.utils.encoding import StrAndUnicode, force_unicode
+ from django.utils.safestring import mark_safe
+ from django.utils import datetime_safe, formats
+@@ -18,7 +18,7 @@ from urlparse import urljoin
+ 
+ __all__ = (
+     'Media', 'MediaDefiningClass', 'Widget', 'TextInput', 'PasswordInput',
+-    'HiddenInput', 'MultipleHiddenInput',
++    'HiddenInput', 'MultipleHiddenInput', 'ClearableFileInput',
+     'FileInput', 'DateInput', 'DateTimeInput', 'TimeInput', 'Textarea', 'CheckboxInput',
+     'Select', 'NullBooleanSelect', 'SelectMultiple', 'RadioSelect',
+     'CheckboxSelectMultiple', 'MultiWidget',
+@@ -134,6 +134,7 @@ class Widget(object):
+     is_hidden = False          # Determines whether this corresponds to an <input type="hidden">.
+     needs_multipart_form = False # Determines does this widget need multipart-encrypted form
+     is_localized = False
++    is_required = False
+ 
+     def __init__(self, attrs=None):
+         if attrs is not None:
+@@ -286,6 +287,67 @@ class FileInput(Input):
+             return False
+         return True
+ 
++FILE_INPUT_CONTRADICTION = object()
++
++class ClearableFileInput(FileInput):
++    initial_text = ugettext_lazy('Currently')
++    input_text = ugettext_lazy('Change')
++    clear_checkbox_label = ugettext_lazy('Clear')
++
++    template_with_initial = u'%(initial_text)s: %(initial)s %(clear_template)s<br />%(input_text)s: %(input)s'
++
++    template_with_clear = u'%(clear)s <label for="%(clear_checkbox_id)s">%(clear_checkbox_label)s</label>'
++
++    def clear_checkbox_name(self, name):
++        """
++        Given the name of the file input, return the name of the clear checkbox
++        input.
++        """
++        return name + '-clear'
++
++    def clear_checkbox_id(self, name):
++        """
++        Given the name of the clear checkbox input, return the HTML id for it.
++        """
++        return name + '_id'
++
++    def render(self, name, value, attrs=None):
++        substitutions = {
++            'initial_text': self.initial_text,
++            'input_text': self.input_text,
++            'clear_template': '',
++            'clear_checkbox_label': self.clear_checkbox_label,
++        }
++        template = u'%(input)s'
++        substitutions['input'] = super(ClearableFileInput, self).render(name, value, attrs)
++
++        if value and hasattr(value, "url"):
++            template = self.template_with_initial
++            substitutions['initial'] = (u'<a target="_blank" href="%s">%s</a>'
++                                        % (value.url, value))
++            if not self.is_required:
++                checkbox_name = self.clear_checkbox_name(name)
++                checkbox_id = self.clear_checkbox_id(checkbox_name)
++                substitutions['clear_checkbox_name'] = checkbox_name
++                substitutions['clear_checkbox_id'] = checkbox_id
++                substitutions['clear'] = CheckboxInput().render(checkbox_name, False, attrs={'id': checkbox_id})
++                substitutions['clear_template'] = self.template_with_clear % substitutions
++
++        return mark_safe(template % substitutions)
++
++    def value_from_datadict(self, data, files, name):
++        upload = super(ClearableFileInput, self).value_from_datadict(data, files, name)
++        if not self.is_required and CheckboxInput().value_from_datadict(
++            data, files, self.clear_checkbox_name(name)):
++            if upload:
++                # If the user contradicts themselves (uploads a new file AND
++                # checks the "clear" checkbox), we return a unique marker
++                # object that FileField will turn into a ValidationError.
++                return FILE_INPUT_CONTRADICTION
++            # False signals to clear any existing value, as opposed to just None
++            return False
++        return upload
++
+ class Textarea(Widget):
+     def __init__(self, attrs=None):
+         # The 'rows' and 'cols' attributes are required for HTML correctness.
+diff --git a/tests/regressiontests/admin_widgets/models.py b/tests/regressiontests/admin_widgets/models.py
+index 59d625ba12..20c0df6ee8 100644
+--- a/tests/regressiontests/admin_widgets/models.py
++++ b/tests/regressiontests/admin_widgets/models.py
+@@ -116,7 +116,7 @@ HTML escaped.
+ 
+ >>> w = AdminFileWidget()
+ >>> print conditional_escape(w.render('test', album.cover_art))
+-Currently: <a target="_blank" href="%(STORAGE_URL)salbums/hybrid_theory.jpg">albums\hybrid_theory.jpg</a> <br />Change: <input type="file" name="test" />
++<p class="file-upload">Currently: <a target="_blank" href="%(STORAGE_URL)salbums/hybrid_theory.jpg">albums\hybrid_theory.jpg</a> <span class="clearable-file-input"><input type="checkbox" name="test-clear" id="test-clear_id" /> <label for="test-clear_id">Clear</label></span><br />Change: <input type="file" name="test" /></p>
+ >>> print conditional_escape(w.render('test', SimpleUploadedFile('test', 'content')))
+ <input type="file" name="test" />
+ 
+diff --git a/tests/regressiontests/forms/fields.py b/tests/regressiontests/forms/fields.py
+index e4f2c261c9..d29e2e8e43 100644
+--- a/tests/regressiontests/forms/fields.py
++++ b/tests/regressiontests/forms/fields.py
+@@ -57,6 +57,10 @@ class FieldsTests(TestCase):
+         except error, e:
+             self.assertEqual(message, str(e))
+ 
++    def test_field_sets_widget_is_required(self):
++        self.assertEqual(Field(required=True).widget.is_required, True)
++        self.assertEqual(Field(required=False).widget.is_required, False)
++
+     # CharField ###################################################################
+ 
+     def test_charfield_0(self):
+diff --git a/tests/regressiontests/forms/tests.py b/tests/regressiontests/forms/tests.py
+index 7a91cb701e..1871d4f89a 100644
+--- a/tests/regressiontests/forms/tests.py
++++ b/tests/regressiontests/forms/tests.py
+@@ -39,7 +39,7 @@ from media import media_tests
+ 
+ from fields import FieldsTests
+ from validators import TestFieldWithValidators
+-from widgets import WidgetTests
++from widgets import WidgetTests, ClearableFileInputTests
+ 
+ from input_formats import *
+ 
+diff --git a/tests/regressiontests/forms/widgets.py b/tests/regressiontests/forms/widgets.py
+index 59b33d5210..10483a7675 100644
+--- a/tests/regressiontests/forms/widgets.py
++++ b/tests/regressiontests/forms/widgets.py
+@@ -1269,6 +1269,7 @@ u'<input type="hidden" name="date_0" value="17.09.2007" /><input type="hidden" n
+ from django.utils import copycompat as copy
+ from unittest import TestCase
+ from django import forms
++from django.core.files.uploadedfile import SimpleUploadedFile
+ 
+ 
+ class SelectAndTextWidget(forms.MultiWidget):
+@@ -1323,3 +1324,76 @@ class WidgetTests(TestCase):
+         self.assertFalse(form.is_valid())
+         form = SplitDateRequiredForm({'field': ['', '']})
+         self.assertFalse(form.is_valid())
++
++
++class FakeFieldFile(object):
++    """
++    Quacks like a FieldFile (has a .url and unicode representation), but
++    doesn't require us to care about storages etc.
++
++    """
++    url = 'something'
++
++    def __unicode__(self):
++        return self.url
++
++class ClearableFileInputTests(TestCase):
++    def test_clear_input_renders(self):
++        """
++        A ClearableFileInput with is_required False and rendered with
++        an initial value that is a file renders a clear checkbox.
++
++        """
++        widget = forms.ClearableFileInput()
++        widget.is_required = False
++        self.assertEqual(widget.render('myfile', FakeFieldFile()),
++                         u'Currently: <a target="_blank" href="something">something</a> <input type="checkbox" name="myfile-clear" id="myfile-clear_id" /> <label for="myfile-clear_id">Clear</label><br />Change: <input type="file" name="myfile" />')
++
++    def test_clear_input_renders_only_if_not_required(self):
++        """
++        A ClearableFileInput with is_required=False does not render a clear
++        checkbox.
++
++        """
++        widget = forms.ClearableFileInput()
++        widget.is_required = True
++        self.assertEqual(widget.render('myfile', FakeFieldFile()),
++                         u'Currently: <a target="_blank" href="something">something</a> <br />Change: <input type="file" name="myfile" />')
++
++    def test_clear_input_renders_only_if_initial(self):
++        """
++        A ClearableFileInput instantiated with no initial value does not render
++        a clear checkbox.
++
++        """
++        widget = forms.ClearableFileInput()
++        widget.is_required = False
++        self.assertEqual(widget.render('myfile', None),
++                         u'<input type="file" name="myfile" />')
++
++    def test_clear_input_checked_returns_false(self):
++        """
++        ClearableFileInput.value_from_datadict returns False if the clear
++        checkbox is checked, if not required.
++
++        """
++        widget = forms.ClearableFileInput()
++        widget.is_required = False
++        self.assertEqual(widget.value_from_datadict(
++                data={'myfile-clear': True},
++                files={},
++                name='myfile'), False)
++
++    def test_clear_input_checked_returns_false_only_if_not_required(self):
++        """
++        ClearableFileInput.value_from_datadict never returns False if the field
++        is required.
++
++        """
++        widget = forms.ClearableFileInput()
++        widget.is_required = True
++        f = SimpleUploadedFile('something.txt', 'content')
++        self.assertEqual(widget.value_from_datadict(
++                data={'myfile-clear': True},
++                files={'myfile': f},
++                name='myfile'), f)
+diff --git a/tests/regressiontests/model_fields/models.py b/tests/regressiontests/model_fields/models.py
+index 45cd223142..1dc1649f13 100644
+--- a/tests/regressiontests/model_fields/models.py
++++ b/tests/regressiontests/model_fields/models.py
+@@ -66,6 +66,12 @@ class BooleanModel(models.Model):
+     bfield = models.BooleanField()
+     string = models.CharField(max_length=10, default='abc')
+ 
++###############################################################################
++# FileField
++
++class Document(models.Model):
++    myfile = models.FileField(upload_to='unused')
++
+ ###############################################################################
+ # ImageField
+ 
+diff --git a/tests/regressiontests/model_fields/tests.py b/tests/regressiontests/model_fields/tests.py
+index 72a7d4d657..58c32b5c0a 100644
+--- a/tests/regressiontests/model_fields/tests.py
++++ b/tests/regressiontests/model_fields/tests.py
+@@ -6,8 +6,9 @@ import django.test
+ from django import forms
+ from django.db import models
+ from django.core.exceptions import ValidationError
++from django.db.models.fields.files import FieldFile
+ 
+-from models import Foo, Bar, Whiz, BigD, BigS, Image, BigInt, Post, NullBooleanModel, BooleanModel
++from models import Foo, Bar, Whiz, BigD, BigS, Image, BigInt, Post, NullBooleanModel, BooleanModel, Document
+ 
+ # If PIL available, do these tests.
+ if Image:
+@@ -311,3 +312,39 @@ class TypeCoercionTests(django.test.TestCase):
+     def test_lookup_integer_in_textfield(self):
+         self.assertEquals(Post.objects.filter(body=24).count(), 0)
+ 
++class FileFieldTests(unittest.TestCase):
++    def test_clearable(self):
++        """
++        Test that FileField.save_form_data will clear its instance attribute
++        value if passed False.
++
++        """
++        d = Document(myfile='something.txt')
++        self.assertEqual(d.myfile, 'something.txt')
++        field = d._meta.get_field('myfile')
++        field.save_form_data(d, False)
++        self.assertEqual(d.myfile, '')
++
++    def test_unchanged(self):
++        """
++        Test that FileField.save_form_data considers None to mean "no change"
++        rather than "clear".
++
++        """
++        d = Document(myfile='something.txt')
++        self.assertEqual(d.myfile, 'something.txt')
++        field = d._meta.get_field('myfile')
++        field.save_form_data(d, None)
++        self.assertEqual(d.myfile, 'something.txt')
++
++    def test_changed(self):
++        """
++        Test that FileField.save_form_data, if passed a truthy value, updates
++        its instance attribute.
++
++        """
++        d = Document(myfile='something.txt')
++        self.assertEqual(d.myfile, 'something.txt')
++        field = d._meta.get_field('myfile')
++        field.save_form_data(d, 'else.txt')
++        self.assertEqual(d.myfile, 'else.txt')
+diff --git a/tests/regressiontests/model_forms_regress/models.py b/tests/regressiontests/model_forms_regress/models.py
+index 4f9811a963..75b8a40938 100644
+--- a/tests/regressiontests/model_forms_regress/models.py
++++ b/tests/regressiontests/model_forms_regress/models.py
+@@ -57,3 +57,6 @@ class Author1(models.Model):
+ 
+ class Homepage(models.Model):
+     url = models.URLField(verify_exists=False)
++
++class Document(models.Model):
++    myfile = models.FileField(upload_to='unused', blank=True)
+diff --git a/tests/regressiontests/model_forms_regress/tests.py b/tests/regressiontests/model_forms_regress/tests.py
+index baf769c02a..397651a6b8 100644
+--- a/tests/regressiontests/model_forms_regress/tests.py
++++ b/tests/regressiontests/model_forms_regress/tests.py
+@@ -1,3 +1,4 @@
++import unittest
+ from datetime import date
+ 
+ from django import db
+@@ -5,10 +6,11 @@ from django import forms
+ from django.forms.models import modelform_factory, ModelChoiceField
+ from django.conf import settings
+ from django.test import TestCase
+-from django.core.exceptions import FieldError
++from django.core.exceptions import FieldError, ValidationError
++from django.core.files.uploadedfile import SimpleUploadedFile
+ 
+ from models import Person, RealPerson, Triple, FilePathModel, Article, \
+-    Publication, CustomFF, Author, Author1, Homepage
++    Publication, CustomFF, Author, Author1, Homepage, Document
+ 
+ 
+ class ModelMultipleChoiceFieldTests(TestCase):
+@@ -333,3 +335,69 @@ class InvalidFieldAndFactory(TestCase):
+         self.assertRaises(FieldError, modelform_factory,
+                           Person, fields=['no-field', 'name'])
+ 
++
++class DocumentForm(forms.ModelForm):
++    class Meta:
++        model = Document
++
++class FileFieldTests(unittest.TestCase):
++    def test_clean_false(self):
++        """
++        If the ``clean`` method on a non-required FileField receives False as
++        the data (meaning clear the field value), it returns False, regardless
++        of the value of ``initial``.
++
++        """
++        f = forms.FileField(required=False)
++        self.assertEqual(f.clean(False), False)
++        self.assertEqual(f.clean(False, 'initial'), False)
++
++    def test_clean_false_required(self):
++        """
++        If the ``clean`` method on a required FileField receives False as the
++        data, it has the same effect as None: initial is returned if non-empty,
++        otherwise the validation catches the lack of a required value.
++
++        """
++        f = forms.FileField(required=True)
++        self.assertEqual(f.clean(False, 'initial'), 'initial')
++        self.assertRaises(ValidationError, f.clean, False)
++
++    def test_full_clear(self):
++        """
++        Integration happy-path test that a model FileField can actually be set
++        and cleared via a ModelForm.
++
++        """
++        form = DocumentForm()
++        self.assert_('name="myfile"' in unicode(form))
++        self.assert_('myfile-clear' not in unicode(form))
++        form = DocumentForm(files={'myfile': SimpleUploadedFile('something.txt', 'content')})
++        self.assert_(form.is_valid())
++        doc = form.save(commit=False)
++        self.assertEqual(doc.myfile.name, 'something.txt')
++        form = DocumentForm(instance=doc)
++        self.assert_('myfile-clear' in unicode(form))
++        form = DocumentForm(instance=doc, data={'myfile-clear': 'true'})
++        doc = form.save(commit=False)
++        self.assertEqual(bool(doc.myfile), False)
++
++    def test_clear_and_file_contradiction(self):
++        """
++        If the user submits a new file upload AND checks the clear checkbox,
++        they get a validation error, and the bound redisplay of the form still
++        includes the current file and the clear checkbox.
++
++        """
++        form = DocumentForm(files={'myfile': SimpleUploadedFile('something.txt', 'content')})
++        self.assert_(form.is_valid())
++        doc = form.save(commit=False)
++        form = DocumentForm(instance=doc,
++                            files={'myfile': SimpleUploadedFile('something.txt', 'content')},
++                            data={'myfile-clear': 'true'})
++        self.assert_(not form.is_valid())
++        self.assertEqual(form.errors['myfile'],
++                         [u'Please either submit a file or check the clear checkbox, not both.'])
++        rendered = unicode(form)
++        self.assert_('something.txt' in rendered)
++        self.assert_('myfile-clear' in rendered)

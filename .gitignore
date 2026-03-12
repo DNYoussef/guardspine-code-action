@@ -56,3 +56,4 @@ eval/.codeguard/.secrets.toml
 
 # Eval results (local)
 eval/results/
+eval/datasets/_clones/

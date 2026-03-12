@@ -1,0 +1,88 @@
+diff --git a/src/cryptography/hazmat/primitives/asymmetric/ec.py b/src/cryptography/hazmat/primitives/asymmetric/ec.py
+index 8638d2064..a13d9827f 100644
+--- a/src/cryptography/hazmat/primitives/asymmetric/ec.py
++++ b/src/cryptography/hazmat/primitives/asymmetric/ec.py
+@@ -445,26 +445,3 @@ def get_curve_for_oid(oid: ObjectIdentifier) -> type[EllipticCurve]:
+             "The provided object identifier has no matching elliptic "
+             "curve class"
+         )
+-
+-
+-_SECT_CURVES: tuple[type[EllipticCurve], ...] = (
+-    SECT163K1,
+-    SECT163R2,
+-    SECT233K1,
+-    SECT233R1,
+-    SECT283K1,
+-    SECT283R1,
+-    SECT409K1,
+-    SECT409R1,
+-    SECT571K1,
+-    SECT571R1,
+-)
+-
+-for _curve_cls in _SECT_CURVES:
+-    utils.deprecated(
+-        _curve_cls,
+-        __name__,
+-        f"{_curve_cls.__name__} will be removed in the next release.",
+-        utils.DeprecatedIn46,
+-        name=_curve_cls.__name__,
+-    )
+diff --git a/src/cryptography/utils.py b/src/cryptography/utils.py
+index 3a930fdea..a0fc3b1da 100644
+--- a/src/cryptography/utils.py
++++ b/src/cryptography/utils.py
+@@ -26,7 +26,6 @@ DeprecatedIn40 = CryptographyDeprecationWarning
+ DeprecatedIn41 = CryptographyDeprecationWarning
+ DeprecatedIn42 = CryptographyDeprecationWarning
+ DeprecatedIn43 = CryptographyDeprecationWarning
+-DeprecatedIn46 = CryptographyDeprecationWarning
+ 
+ 
+ # If you're wondering why we don't use `Buffer`, it's because `Buffer` would
+diff --git a/tests/hazmat/primitives/test_ec.py b/tests/hazmat/primitives/test_ec.py
+index a39a69e50..2f62e46db 100644
+--- a/tests/hazmat/primitives/test_ec.py
++++ b/tests/hazmat/primitives/test_ec.py
+@@ -1542,40 +1542,3 @@ class TestECDH:
+ 
+         with pytest.raises(ValueError):
+             key.exchange(ec.ECDH(), public_key)
+-
+-
+-def test_invalid_sect_public_keys(backend):
+-    _skip_curve_unsupported(backend, ec.SECT571K1())
+-    public_numbers = ec.EllipticCurvePublicNumbers(1, 1, ec.SECT571K1())
+-    with pytest.raises(ValueError):
+-        public_numbers.public_key()
+-
+-    point = binascii.unhexlify(
+-        b"0400000000000000000000000000000000000000000000000000000000000000000"
+-        b"0000000000000000000000000000000000000000000000000000000000000000000"
+-        b"0000000000010000000000000000000000000000000000000000000000000000000"
+-        b"0000000000000000000000000000000000000000000000000000000000000000000"
+-        b"0000000000000000000001"
+-    )
+-    with pytest.raises(ValueError):
+-        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECT571K1(), point)
+-
+-    der = binascii.unhexlify(
+-        b"3081a7301006072a8648ce3d020106052b810400260381920004000000000000000"
+-        b"0000000000000000000000000000000000000000000000000000000000000000000"
+-        b"0000000000000000000000000000000000000000000000000000000000000100000"
+-        b"0000000000000000000000000000000000000000000000000000000000000000000"
+-        b"0000000000000000000000000000000000000000000000000000000000000000000"
+-        b"00001"
+-    )
+-    with pytest.raises(ValueError):
+-        serialization.load_der_public_key(der)
+-
+-    pem = textwrap.dedent("""-----BEGIN PUBLIC KEY-----
+-    MIGnMBAGByqGSM49AgEGBSuBBAAmA4GSAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-    AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+-    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE=
+-    -----END PUBLIC KEY-----""").encode()
+-    with pytest.raises(ValueError):
+-        serialization.load_pem_public_key(pem)

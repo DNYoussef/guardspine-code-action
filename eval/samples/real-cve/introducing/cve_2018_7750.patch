@@ -1,0 +1,40 @@
+diff --git a/auth_transport.py b/paramiko/auth_transport.py
+similarity index 100%
+rename from auth_transport.py
+rename to paramiko/auth_transport.py
+diff --git a/ber.py b/paramiko/ber.py
+similarity index 100%
+rename from ber.py
+rename to paramiko/ber.py
+diff --git a/channel.py b/paramiko/channel.py
+similarity index 100%
+rename from channel.py
+rename to paramiko/channel.py
+diff --git a/dsskey.py b/paramiko/dsskey.py
+similarity index 100%
+rename from dsskey.py
+rename to paramiko/dsskey.py
+diff --git a/kex_gex.py b/paramiko/kex_gex.py
+similarity index 100%
+rename from kex_gex.py
+rename to paramiko/kex_gex.py
+diff --git a/kex_group1.py b/paramiko/kex_group1.py
+similarity index 100%
+rename from kex_group1.py
+rename to paramiko/kex_group1.py
+diff --git a/message.py b/paramiko/message.py
+similarity index 100%
+rename from message.py
+rename to paramiko/message.py
+diff --git a/rsakey.py b/paramiko/rsakey.py
+similarity index 100%
+rename from rsakey.py
+rename to paramiko/rsakey.py
+diff --git a/transport.py b/paramiko/transport.py
+similarity index 100%
+rename from transport.py
+rename to paramiko/transport.py
+diff --git a/util.py b/paramiko/util.py
+similarity index 100%
+rename from util.py
+rename to paramiko/util.py

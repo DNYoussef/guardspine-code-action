@@ -70,6 +70,18 @@ _HASH_FIELD_EXACT = frozenset({
 })
 
 
+_DEFAULT_SAFE_REGEX_LIST = [
+    {
+        "pattern": "\\w+_hash[\"']?\\s*[:=]\\s*[\"']?(?:sha256:)?[0-9a-fA-F]{64}",
+        "name": "HashFieldSHA256",
+    },
+    {
+        "pattern": "^[0-9a-fA-F]{64}$",
+        "name": "BareHexSHA256",
+    },
+]
+
+
 def _is_hash_field(key: str) -> bool:
     return any(key.endswith(s) for s in _HASH_FIELD_SUFFIXES) or key in _HASH_FIELD_EXACT
 
@@ -190,8 +202,12 @@ class PIIShieldClient:
         self.fail_closed = fail_closed
         self.salt_fingerprint = salt_fingerprint
         # PII-Shield v1.2.0+: JSON array of {"pattern": ..., "name": ...} objects
-        # that bypass entropy detection entirely (replaces entropy threshold tuning)
-        self.safe_regex_list = safe_regex_list
+        # that bypass entropy detection entirely (replaces entropy threshold tuning).
+        # Default: whitelist SHA-256 hex strings in _hash fields so that
+        # content-addressable identifiers in evidence bundles are not flagged.
+        self.safe_regex_list = safe_regex_list or json.dumps(
+            _DEFAULT_SAFE_REGEX_LIST
+        )
 
         if self.endpoint:
             _validate_endpoint(self.endpoint)

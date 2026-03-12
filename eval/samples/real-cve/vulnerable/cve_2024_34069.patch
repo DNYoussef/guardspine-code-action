@@ -1,0 +1,126 @@
+diff --git a/src/werkzeug/debug/__init__.py b/src/werkzeug/debug/__init__.py
+index 6bef30fbca..a55480aa32 100644
+--- a/src/werkzeug/debug/__init__.py
++++ b/src/werkzeug/debug/__init__.py
+@@ -19,9 +19,7 @@ from zlib import adler32
+ 
+ from .._internal import _log
+ from ..exceptions import NotFound
+-from ..exceptions import SecurityError
+ from ..http import parse_cookie
+-from ..sansio.utils import host_is_trusted
+ from ..security import gen_salt
+ from ..utils import send_file
+ from ..wrappers.request import Request
+@@ -300,14 +298,6 @@ class DebuggedApplication:
+         else:
+             self.pin = None
+ 
+-        self.trusted_hosts: list[str] = [".localhost", "127.0.0.1"]
+-        """List of domains to allow requests to the debugger from. A leading dot
+-        allows all subdomains. This only allows ``".localhost"`` domains by
+-        default.
+-
+-        .. versionadded:: 3.0.3
+-        """
+-
+     @property
+     def pin(self) -> str | None:
+         if not hasattr(self, "_pin"):
+@@ -354,7 +344,7 @@ class DebuggedApplication:
+ 
+             is_trusted = bool(self.check_pin_trust(environ))
+             html = tb.render_debugger_html(
+-                evalex=self.evalex and self.check_host_trust(environ),
++                evalex=self.evalex,
+                 secret=self.secret,
+                 evalex_trusted=is_trusted,
+             )
+@@ -382,9 +372,6 @@ class DebuggedApplication:
+         frame: DebugFrameSummary | _ConsoleFrame,
+     ) -> Response:
+         """Execute a command in a console."""
+-        if not self.check_host_trust(request.environ):
+-            return SecurityError()  # type: ignore[return-value]
+-
+         contexts = self.frame_contexts.get(id(frame), [])
+ 
+         with ExitStack() as exit_stack:
+@@ -395,9 +382,6 @@ class DebuggedApplication:
+ 
+     def display_console(self, request: Request) -> Response:
+         """Display a standalone shell."""
+-        if not self.check_host_trust(request.environ):
+-            return SecurityError()  # type: ignore[return-value]
+-
+         if 0 not in self.frames:
+             if self.console_init_func is None:
+                 ns = {}
+@@ -450,18 +434,12 @@ class DebuggedApplication:
+             return None
+         return (time.time() - PIN_TIME) < ts
+ 
+-    def check_host_trust(self, environ: WSGIEnvironment) -> bool:
+-        return host_is_trusted(environ.get("HTTP_HOST"), self.trusted_hosts)
+-
+     def _fail_pin_auth(self) -> None:
+         time.sleep(5.0 if self._failed_pin_auth > 5 else 0.5)
+         self._failed_pin_auth += 1
+ 
+     def pin_auth(self, request: Request) -> Response:
+         """Authenticates with the pin."""
+-        if not self.check_host_trust(request.environ):
+-            return SecurityError()  # type: ignore[return-value]
+-
+         exhausted = False
+         auth = False
+         trust = self.check_pin_trust(request.environ)
+@@ -511,11 +489,8 @@ class DebuggedApplication:
+             rv.delete_cookie(self.pin_cookie_name)
+         return rv
+ 
+-    def log_pin_request(self, request: Request) -> Response:
++    def log_pin_request(self) -> Response:
+         """Log the pin if needed."""
+-        if not self.check_host_trust(request.environ):
+-            return SecurityError()  # type: ignore[return-value]
+-
+         if self.pin_logging and self.pin is not None:
+             _log(
+                 "info", " * To enable the debugger you need to enter the security pin:"
+@@ -542,7 +517,7 @@ class DebuggedApplication:
+             elif cmd == "pinauth" and secret == self.secret:
+                 response = self.pin_auth(request)  # type: ignore
+             elif cmd == "printpin" and secret == self.secret:
+-                response = self.log_pin_request(request)  # type: ignore
++                response = self.log_pin_request()  # type: ignore
+             elif (
+                 self.evalex
+                 and cmd is not None
+diff --git a/src/werkzeug/sansio/utils.py b/src/werkzeug/sansio/utils.py
+index 14fa0ac88c..48ec1bfa07 100644
+--- a/src/werkzeug/sansio/utils.py
++++ b/src/werkzeug/sansio/utils.py
+@@ -8,7 +8,7 @@ from ..exceptions import SecurityError
+ from ..urls import uri_to_iri
+ 
+ 
+-def host_is_trusted(hostname: str | None, trusted_list: t.Iterable[str]) -> bool:
++def host_is_trusted(hostname: str, trusted_list: t.Iterable[str]) -> bool:
+     """Check if a host matches a list of trusted names.
+ 
+     :param hostname: The name to check.
+diff --git a/src/werkzeug/serving.py b/src/werkzeug/serving.py
+index 859f9aacb6..7f6ea922e9 100644
+--- a/src/werkzeug/serving.py
++++ b/src/werkzeug/serving.py
+@@ -1072,9 +1072,6 @@ def run_simple(
+         from .debug import DebuggedApplication
+ 
+         application = DebuggedApplication(application, evalex=use_evalex)
+-        # Allow the specified hostname to use the debugger, in addition to
+-        # localhost domains.
+-        application.trusted_hosts.append(hostname)
+ 
+     if not is_running_from_reloader():
+         fd = None

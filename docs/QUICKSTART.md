@@ -34,30 +34,32 @@ Create this file in your repo:
 
 Paste this content:
 
-  name: CodeGuard
-  on: [pull_request]
+```yaml
+name: CodeGuard
+on: [pull_request]
 
-  permissions:
-    contents: read
-    pull-requests: write
+permissions:
+  contents: read
+  pull-requests: write
 
-  jobs:
-    governance:
-      runs-on: ubuntu-latest
-      steps:
-        - uses: actions/checkout@v4
+jobs:
+  governance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-        - uses: DNYoussef/codeguard-action@v1
-          id: guard
-          with:
-            github_token: ${{ secrets.GITHUB_TOKEN }}
-            openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+      - uses: DNYoussef/codeguard-action@v1
+        id: guard
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 
-        - uses: actions/upload-artifact@v4
-          if: always()
-          with:
-            name: evidence-bundle-${{ github.event.pull_request.number }}
-            path: .guardspine/bundles/
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-bundle-${{ github.event.pull_request.number }}
+          path: .guardspine/bundles/
+```
 
 That's the minimal config. Commit it to your default branch.
 
@@ -66,6 +68,9 @@ STEP 3: Open a pull request (1 minute)
 ---------------------------------------
 
 Make any change on a branch and open a PR. CodeGuard runs automatically.
+
+First run takes ~2 minutes while GitHub builds the Docker image. Subsequent
+runs reuse the cached image and finish faster.
 
 Within 1-2 minutes you'll see:
 
@@ -86,7 +91,7 @@ STEP 4: Verify a bundle (1 minute, optional)
 
 Download the evidence bundle JSON from the workflow artifacts, then:
 
-  pip install guardspine-verify
+  pip install git+https://github.com/DNYoussef/guardspine-verify
   guardspine-verify evidence-bundle.json
 
 Output shows: hash chain integrity, event sequence, and whether any
@@ -108,7 +113,7 @@ Next steps (when you're ready):
   Enable PII redaction          pii_shield_enabled: true
   Upload to Security tab        upload_sarif: true
   Auto-merge clean PRs          auto_merge: true
-  Use specific models           model_1: anthropic/claude-sonnet-4
+  Use specific models           model_1: anthropic/claude-sonnet-4.5
                                 model_2: openai/gpt-4.1
                                 model_3: google/gemini-2.5-flash
 
@@ -118,44 +123,52 @@ CONFIGURATION CHEAT SHEET
 
 Minimal (rules + single AI model):
 
-  - uses: DNYoussef/codeguard-action@v1
-    with:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
-      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+```
 
 Standard (compliance rubric + block high risk):
 
-  - uses: DNYoussef/codeguard-action@v1
-    with:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
-      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-      rubric: soc2
-      risk_threshold: L3
-      fail_on_high_risk: true
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    rubric: soc2
+    risk_threshold: L3
+    fail_on_high_risk: true
+```
 
 Enterprise (multi-model + PII protection + SARIF):
 
-  - uses: DNYoussef/codeguard-action@v1
-    with:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
-      openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
-      rubric: hipaa
-      risk_threshold: L2
-      fail_on_high_risk: true
-      upload_sarif: true
-      pii_shield_enabled: true
-      model_1: anthropic/claude-sonnet-4
-      model_2: openai/gpt-4.1
-      model_3: google/gemini-2.5-flash
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    rubric: hipaa
+    risk_threshold: L2
+    fail_on_high_risk: true
+    upload_sarif: true
+    pii_shield_enabled: true
+    model_1: anthropic/claude-sonnet-4.5
+    model_2: openai/gpt-4.1
+    model_3: google/gemini-2.5-flash
+```
 
 Air-gapped (Ollama, no external API calls):
 
-  - uses: DNYoussef/codeguard-action@v1
-    with:
-      github_token: ${{ secrets.GITHUB_TOKEN }}
-      ollama_host: http://your-ollama-server:11434
-      ollama_model: llama3.3
-      ai_review: true
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    ollama_host: http://your-ollama-server:11434
+    ollama_model: llama3.3
+    ai_review: true
+```
 
 
 RISK TIERS EXPLAINED
@@ -220,4 +233,4 @@ SUPPORT
 -------
 
 Issues: https://github.com/DNYoussef/codeguard-action/issues
-Email: david@guardspine.dev
+Email: team@guardspine.ai

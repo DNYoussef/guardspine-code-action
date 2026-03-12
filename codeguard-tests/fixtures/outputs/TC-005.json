@@ -1,0 +1,56 @@
+{
+  "detected": true,
+  "risk_level": 3,
+  "signals": ["unsanitized_user_input_to_logger", "log4j_string_concatenation", "user_controlled_header"],
+  "categories": ["injection", "logging_vulnerability"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "summary": "User-controlled header logged via string concatenation in log4j",
+      "evidence": ["logger.debug(\"Full request context: \" + userAgent + \" from \" + xForwarded)"],
+      "file_paths": ["src/main/java/com/app/controller/UserController.java"],
+      "remediation": "Use parameterized logging: logger.debug(\"Context: {} from {}\", userAgent, xForwarded)"
+    },
+    {
+      "id": "F2",
+      "severity": "high",
+      "summary": "API key header value logged via string concatenation",
+      "evidence": ["logger.info(\"API key header: \" + request.getHeader(\"X-Api-Key\"))"],
+      "file_paths": ["src/main/java/com/app/controller/UserController.java"],
+      "remediation": "Never log API keys. If needed for debug, log only a masked prefix."
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o", "gemini-2.0-flash"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 3,
+        "signals": ["log4j_string_concatenation", "user_controlled_header"],
+        "findings": ["F1", "F2"]
+      },
+      "gpt-4o": {
+        "risk_level": 3,
+        "signals": ["unsanitized_user_input_to_logger", "log4j_string_concatenation"],
+        "findings": ["F1"]
+      },
+      "gemini-2.0-flash": {
+        "risk_level": 2,
+        "signals": ["user_controlled_header"],
+        "findings": ["F1"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []},
+      "gemini-2.0-flash": {"risk_level": 3, "accepted": ["F1", "F2"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 3,
+      "signals": ["unsanitized_user_input_to_logger", "log4j_string_concatenation", "user_controlled_header"],
+      "findings": ["F1", "F2"],
+      "human_required": false
+    }
+  }
+}

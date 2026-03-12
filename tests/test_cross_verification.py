@@ -7,6 +7,7 @@ legacy chain fields but never verified produced bundles against the canonical ke
 """
 
 import hashlib
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -18,7 +19,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from canonical_json import canonical_json_dumps
 
 # Add guardspine-kernel-py to path for cross-verification
-KERNEL_PY = Path("D:/Projects/guardspine-kernel-py")
+# Check env var > sibling directory > skip
+_kernel_env = os.environ.get("GUARDSPINE_KERNEL_PY_ROOT")
+if _kernel_env:
+    KERNEL_PY = Path(_kernel_env)
+else:
+    KERNEL_PY = ROOT.parent / "guardspine-kernel-py"
 if KERNEL_PY.exists():
     sys.path.insert(0, str(KERNEL_PY / "src"))
     _HAS_KERNEL = True

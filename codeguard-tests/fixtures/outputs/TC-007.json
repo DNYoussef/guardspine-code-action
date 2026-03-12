@@ -1,0 +1,58 @@
+{
+  "detected": true,
+  "risk_level": 2,
+  "signals": ["hardcoded_credential", "api_key", "sk_live_", "AKIA", "secret_in_source"],
+  "categories": ["credential_exposure"],
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "high",
+      "summary": "Live Stripe API key hardcoded in source code",
+      "evidence": ["STRIPE_API_KEY = \"sk_live_EXAMPLE_NOT_REAL_KEY_1234567890\""],
+      "file_paths": ["config/settings.py"],
+      "remediation": "Use environment variables: os.environ[\"STRIPE_API_KEY\"]. Rotate the exposed key immediately."
+    },
+    {
+      "id": "F2",
+      "severity": "high",
+      "summary": "AWS access key and secret hardcoded in source code",
+      "evidence": ["AWS_ACCESS_KEY_ID = \"AKIAIOSFODNN7EXAMPLE\"", "AWS_SECRET_ACCESS_KEY = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\""],
+      "file_paths": ["config/settings.py"],
+      "remediation": "Use AWS IAM roles or environment variables. Rotate exposed credentials."
+    },
+    {
+      "id": "F3",
+      "severity": "medium",
+      "summary": "Database connection string with embedded password",
+      "evidence": ["DATABASE_URL = \"postgresql://admin:supersecret@prod-db.internal:5432/myapp\""],
+      "file_paths": ["config/settings.py"],
+      "remediation": "Store DATABASE_URL in environment variables or a secrets manager."
+    }
+  ],
+  "council": {
+    "enabled": true,
+    "models": ["claude-sonnet-4-5", "gpt-4o"],
+    "naive": {
+      "claude-sonnet-4-5": {
+        "risk_level": 2,
+        "signals": ["hardcoded_credential", "sk_live_", "AKIA"],
+        "findings": ["F1", "F2", "F3"]
+      },
+      "gpt-4o": {
+        "risk_level": 2,
+        "signals": ["api_key", "secret_in_source"],
+        "findings": ["F1", "F2"]
+      }
+    },
+    "round_robin": {
+      "claude-sonnet-4-5": {"risk_level": 2, "accepted": ["F1", "F2", "F3"], "rejected": [], "added": []},
+      "gpt-4o": {"risk_level": 2, "accepted": ["F1", "F2", "F3"], "rejected": [], "added": []}
+    },
+    "consensus": {
+      "risk_level": 2,
+      "signals": ["hardcoded_credential", "api_key", "sk_live_", "AKIA", "secret_in_source"],
+      "findings": ["F1", "F2", "F3"],
+      "human_required": false
+    }
+  }
+}

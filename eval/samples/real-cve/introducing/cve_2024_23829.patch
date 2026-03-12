@@ -1,0 +1,362 @@
+diff --git a/aiohttp/client.py b/aiohttp/client.py
+index d75a91ab8..398a1d88d 100644
+--- a/aiohttp/client.py
++++ b/aiohttp/client.py
+@@ -24,7 +24,6 @@ from typing import (
+     Generic,
+     Iterable,
+     List,
+-    Literal,
+     Mapping,
+     Optional,
+     Set,
+@@ -364,7 +363,7 @@ class ClientSession:
+         proxy: Optional[StrOrURL] = None,
+         proxy_auth: Optional[BasicAuth] = None,
+         timeout: Union[ClientTimeout, _SENTINEL, None] = sentinel,
+-        ssl: Optional[Union[SSLContext, Literal[False], Fingerprint]] = None,
++        ssl: Union[SSLContext, bool, Fingerprint] = True,
+         server_hostname: Optional[str] = None,
+         proxy_headers: Optional[LooseHeaders] = None,
+         trace_request_ctx: Optional[SimpleNamespace] = None,
+@@ -382,8 +381,8 @@ class ClientSession:
+ 
+         if not isinstance(ssl, SSL_ALLOWED_TYPES):
+             raise TypeError(
+-                "ssl should be SSLContext, bool, Fingerprint, "
+-                "or None, got {!r} instead.".format(ssl)
++                "ssl should be SSLContext, Fingerprint, or bool, "
++                "got {!r} instead.".format(ssl)
+             )
+ 
+         if data is not None and json is not None:
+@@ -513,7 +512,7 @@ class ClientSession:
+                         proxy_auth=proxy_auth,
+                         timer=timer,
+                         session=self,
+-                        ssl=ssl,
++                        ssl=ssl if ssl is not None else True,  # type: ignore[redundant-expr]
+                         server_hostname=server_hostname,
+                         proxy_headers=proxy_headers,
+                         traces=traces,
+@@ -702,7 +701,7 @@ class ClientSession:
+         headers: Optional[LooseHeaders] = None,
+         proxy: Optional[StrOrURL] = None,
+         proxy_auth: Optional[BasicAuth] = None,
+-        ssl: Union[SSLContext, Literal[False], None, Fingerprint] = None,
++        ssl: Union[SSLContext, bool, Fingerprint] = True,
+         server_hostname: Optional[str] = None,
+         proxy_headers: Optional[LooseHeaders] = None,
+         compress: int = 0,
+@@ -725,7 +724,7 @@ class ClientSession:
+                 headers=headers,
+                 proxy=proxy,
+                 proxy_auth=proxy_auth,
+-                ssl=ssl,
++                ssl=ssl if ssl is not None else True,  # type: ignore[redundant-expr]
+                 server_hostname=server_hostname,
+                 proxy_headers=proxy_headers,
+                 compress=compress,
+@@ -750,7 +749,7 @@ class ClientSession:
+         headers: Optional[LooseHeaders] = None,
+         proxy: Optional[StrOrURL] = None,
+         proxy_auth: Optional[BasicAuth] = None,
+-        ssl: Union[SSLContext, Literal[False], None, Fingerprint] = None,
++        ssl: Union[SSLContext, bool, Fingerprint] = True,
+         server_hostname: Optional[str] = None,
+         proxy_headers: Optional[LooseHeaders] = None,
+         compress: int = 0,
+@@ -806,10 +805,19 @@ class ClientSession:
+             extstr = ws_ext_gen(compress=compress)
+             real_headers[hdrs.SEC_WEBSOCKET_EXTENSIONS] = extstr
+ 
++        # For the sake of backward compatibility, if user passes in None, convert it to True
++        if ssl is None:
++            warnings.warn(
++                "ssl=None is deprecated, please use ssl=True",
++                DeprecationWarning,
++                stacklevel=2,
++            )
++            ssl = True
++
+         if not isinstance(ssl, SSL_ALLOWED_TYPES):
+             raise TypeError(
+-                "ssl should be SSLContext, bool, Fingerprint, "
+-                "or None, got {!r} instead.".format(ssl)
++                "ssl should be SSLContext, Fingerprint, or bool, "
++                "got {!r} instead.".format(ssl)
+             )
+ 
+         # send request
+diff --git a/aiohttp/client_exceptions.py b/aiohttp/client_exceptions.py
+index aa05b9c24..454f56141 100644
+--- a/aiohttp/client_exceptions.py
++++ b/aiohttp/client_exceptions.py
+@@ -149,12 +149,12 @@ class ClientConnectorError(ClientOSError):
+         return self._conn_key.port
+ 
+     @property
+-    def ssl(self) -> Union[SSLContext, None, bool, "Fingerprint"]:
++    def ssl(self) -> Union[SSLContext, bool, "Fingerprint"]:
+         return self._conn_key.ssl
+ 
+     def __str__(self) -> str:
+         return "Cannot connect to host {0.host}:{0.port} ssl:{1} [{2}]".format(
+-            self, self.ssl if self.ssl is not None else "default", self.strerror
++            self, "default" if self.ssl is True else self.ssl, self.strerror
+         )
+ 
+     # OSError.__reduce__ does too much black magick
+@@ -188,7 +188,7 @@ class UnixClientConnectorError(ClientConnectorError):
+ 
+     def __str__(self) -> str:
+         return "Cannot connect to unix socket {0.path} ssl:{1} [{2}]".format(
+-            self, self.ssl if self.ssl is not None else "default", self.strerror
++            self, "default" if self.ssl is True else self.ssl, self.strerror
+         )
+ 
+ 
+diff --git a/aiohttp/client_reqrep.py b/aiohttp/client_reqrep.py
+index 417294a5c..0332e27c8 100644
+--- a/aiohttp/client_reqrep.py
++++ b/aiohttp/client_reqrep.py
+@@ -18,7 +18,6 @@ from typing import (
+     Dict,
+     Iterable,
+     List,
+-    Literal,
+     Mapping,
+     Optional,
+     Tuple,
+@@ -149,7 +148,7 @@ class Fingerprint:
+ if ssl is not None:
+     SSL_ALLOWED_TYPES = (ssl.SSLContext, bool, Fingerprint, type(None))
+ else:  # pragma: no cover
+-    SSL_ALLOWED_TYPES = type(None)
++    SSL_ALLOWED_TYPES = (bool, type(None))
+ 
+ 
+ @dataclasses.dataclass(frozen=True)
+@@ -159,7 +158,7 @@ class ConnectionKey:
+     host: str
+     port: Optional[int]
+     is_ssl: bool
+-    ssl: Union[SSLContext, None, Literal[False], Fingerprint]
++    ssl: Union[SSLContext, bool, Fingerprint]
+     proxy: Optional[URL]
+     proxy_auth: Optional[BasicAuth]
+     proxy_headers_hash: Optional[int]  # hash(CIMultiDict)
+@@ -213,7 +212,7 @@ class ClientRequest:
+         proxy_auth: Optional[BasicAuth] = None,
+         timer: Optional[BaseTimerContext] = None,
+         session: Optional["ClientSession"] = None,
+-        ssl: Union[SSLContext, Literal[False], Fingerprint, None] = None,
++        ssl: Union[SSLContext, bool, Fingerprint] = True,
+         proxy_headers: Optional[LooseHeaders] = None,
+         traces: Optional[List["Trace"]] = None,
+         trust_env: bool = False,
+@@ -248,7 +247,7 @@ class ClientRequest:
+             real_response_class = response_class
+         self.response_class: Type[ClientResponse] = real_response_class
+         self._timer = timer if timer is not None else TimerNoop()
+-        self._ssl = ssl
++        self._ssl = ssl if ssl is not None else True  # type: ignore[redundant-expr]
+         self.server_hostname = server_hostname
+ 
+         if loop.get_debug():
+@@ -290,7 +289,7 @@ class ClientRequest:
+         return self.url.scheme in ("https", "wss")
+ 
+     @property
+-    def ssl(self) -> Union["SSLContext", None, Literal[False], Fingerprint]:
++    def ssl(self) -> Union["SSLContext", bool, Fingerprint]:
+         return self._ssl
+ 
+     @property
+diff --git a/aiohttp/connector.py b/aiohttp/connector.py
+index f1bf48214..fafc8caf5 100644
+--- a/aiohttp/connector.py
++++ b/aiohttp/connector.py
+@@ -746,7 +746,7 @@ class TCPConnector(BaseConnector):
+         use_dns_cache: bool = True,
+         ttl_dns_cache: Optional[int] = 10,
+         family: int = 0,
+-        ssl: Union[None, Literal[False], Fingerprint, SSLContext] = None,
++        ssl: Union[bool, Fingerprint, SSLContext] = True,
+         local_addr: Optional[Tuple[str, int]] = None,
+         resolver: Optional[AbstractResolver] = None,
+         keepalive_timeout: Union[None, float, _SENTINEL] = sentinel,
+@@ -769,8 +769,8 @@ class TCPConnector(BaseConnector):
+ 
+         if not isinstance(ssl, SSL_ALLOWED_TYPES):
+             raise TypeError(
+-                "ssl should be SSLContext, bool, Fingerprint, "
+-                "or None, got {!r} instead.".format(ssl)
++                "ssl should be SSLContext, Fingerprint, or bool, "
++                "got {!r} instead.".format(ssl)
+             )
+         self._ssl = ssl
+         if resolver is None:
+@@ -942,13 +942,13 @@ class TCPConnector(BaseConnector):
+             sslcontext = req.ssl
+             if isinstance(sslcontext, ssl.SSLContext):
+                 return sslcontext
+-            if sslcontext is not None:
++            if sslcontext is not True:
+                 # not verified or fingerprinted
+                 return self._make_ssl_context(False)
+             sslcontext = self._ssl
+             if isinstance(sslcontext, ssl.SSLContext):
+                 return sslcontext
+-            if sslcontext is not None:
++            if sslcontext is not True:
+                 # not verified or fingerprinted
+                 return self._make_ssl_context(False)
+             return self._make_ssl_context(True)
+diff --git a/tests/test_client_exceptions.py b/tests/test_client_exceptions.py
+index 9d339600a..88053d340 100644
+--- a/tests/test_client_exceptions.py
++++ b/tests/test_client_exceptions.py
+@@ -89,7 +89,7 @@ class TestClientConnectorError:
+         host="example.com",
+         port=8080,
+         is_ssl=False,
+-        ssl=None,
++        ssl=True,
+         proxy=None,
+         proxy_auth=None,
+         proxy_headers_hash=None,
+@@ -106,7 +106,7 @@ class TestClientConnectorError:
+         assert err.os_error.strerror == "No such file"
+         assert err.host == "example.com"
+         assert err.port == 8080
+-        assert err.ssl is None
++        assert err.ssl is True
+ 
+     def test_pickle(self) -> None:
+         err = client.ClientConnectorError(
+@@ -123,7 +123,7 @@ class TestClientConnectorError:
+             assert err2.os_error.strerror == "No such file"
+             assert err2.host == "example.com"
+             assert err2.port == 8080
+-            assert err2.ssl is None
++            assert err2.ssl is True
+             assert err2.foo == "bar"
+ 
+     def test_repr(self) -> None:
+@@ -141,7 +141,7 @@ class TestClientConnectorError:
+             os_error=OSError(errno.ENOENT, "No such file"),
+         )
+         assert str(err) == (
+-            "Cannot connect to host example.com:8080 ssl:" "default [No such file]"
++            "Cannot connect to host example.com:8080 ssl:default [No such file]"
+         )
+ 
+ 
+@@ -150,7 +150,7 @@ class TestClientConnectorCertificateError:
+         host="example.com",
+         port=8080,
+         is_ssl=False,
+-        ssl=None,
++        ssl=True,
+         proxy=None,
+         proxy_auth=None,
+         proxy_headers_hash=None,
+diff --git a/tests/test_client_request.py b/tests/test_client_request.py
+index d7053efbd..5483d7be9 100644
+--- a/tests/test_client_request.py
++++ b/tests/test_client_request.py
+@@ -164,7 +164,7 @@ def test_host_port_default_http(make_request: Any) -> None:
+     req = make_request("get", "http://python.org/")
+     assert req.host == "python.org"
+     assert req.port == 80
+-    assert not req.ssl
++    assert not req.is_ssl()
+ 
+ 
+ def test_host_port_default_https(make_request: Any) -> None:
+@@ -391,7 +391,7 @@ def test_ipv6_default_http_port(make_request: Any) -> None:
+     req = make_request("get", "http://[2001:db8::1]/")
+     assert req.host == "2001:db8::1"
+     assert req.port == 80
+-    assert not req.ssl
++    assert not req.is_ssl()
+ 
+ 
+ def test_ipv6_default_https_port(make_request: Any) -> None:
+diff --git a/tests/test_connector.py b/tests/test_connector.py
+index d77a22bb5..a7b92ebbd 100644
+--- a/tests/test_connector.py
++++ b/tests/test_connector.py
+@@ -31,19 +31,19 @@ from aiohttp.tracing import Trace
+ @pytest.fixture()
+ def key():
+     # Connection key
+-    return ConnectionKey("localhost", 80, False, None, None, None, None)
++    return ConnectionKey("localhost", 80, False, True, None, None, None)
+ 
+ 
+ @pytest.fixture
+ def key2():
+     # Connection key
+-    return ConnectionKey("localhost", 80, False, None, None, None, None)
++    return ConnectionKey("localhost", 80, False, True, None, None, None)
+ 
+ 
+ @pytest.fixture
+ def ssl_key():
+     # Connection key
+-    return ConnectionKey("localhost", 80, True, None, None, None, None)
++    return ConnectionKey("localhost", 80, True, True, None, None, None)
+ 
+ 
+ @pytest.fixture
+@@ -1478,7 +1478,7 @@ async def test_cleanup_closed_disabled(loop: Any, mocker: Any) -> None:
+ 
+ async def test_tcp_connector_ctor(loop: Any) -> None:
+     conn = aiohttp.TCPConnector()
+-    assert conn._ssl is None
++    assert conn._ssl is True
+ 
+     assert conn.use_dns_cache
+     assert conn.family == 0
+@@ -1565,7 +1565,7 @@ async def test___get_ssl_context3(loop: Any) -> None:
+     conn = aiohttp.TCPConnector(ssl=ctx)
+     req = mock.Mock()
+     req.is_ssl.return_value = True
+-    req.ssl = None
++    req.ssl = True
+     assert conn._get_ssl_context(req) is ctx
+ 
+ 
+@@ -1591,7 +1591,7 @@ async def test___get_ssl_context6(loop: Any) -> None:
+     conn = aiohttp.TCPConnector()
+     req = mock.Mock()
+     req.is_ssl.return_value = True
+-    req.ssl = None
++    req.ssl = True
+     assert conn._get_ssl_context(req) is conn._make_ssl_context(True)
+ 
+ 
+diff --git a/tests/test_proxy.py b/tests/test_proxy.py
+index bb3c2cb9e..6488b17f1 100644
+--- a/tests/test_proxy.py
++++ b/tests/test_proxy.py
+@@ -88,7 +88,7 @@ class TestProxy(unittest.TestCase):
+             auth=None,
+             headers={"Host": "www.python.org"},
+             loop=self.loop,
+-            ssl=None,
++            ssl=True,
+         )
+ 
+         conn.close()
+@@ -146,7 +146,7 @@ class TestProxy(unittest.TestCase):
+             auth=None,
+             headers={"Host": "www.python.org", "Foo": "Bar"},
+             loop=self.loop,
+-            ssl=None,
++            ssl=True,
+         )
+ 
+         conn.close()
