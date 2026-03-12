@@ -2,6 +2,7 @@
 Risk Classifier - Assigns risk tiers (L0-L4) based on analysis.
 """
 
+from __future__ import annotations
 
 import re
 import copy
