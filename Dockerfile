@@ -41,16 +41,6 @@ COPY --from=builder /staging/ /
 
 WORKDIR /action
 
-# Copy requirements and install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy action code
-COPY src/ ./src/
 COPY lib/pii-shield.wasm ./lib/pii-shield.wasm
-COPY rubrics/ ./rubrics/
-COPY entrypoint.py .
-# Decision engine profiles are inside src/decision_profiles/ (copied with src/)
 
-# Set entrypoint
 ENTRYPOINT ["python", "/action/entrypoint.py"]

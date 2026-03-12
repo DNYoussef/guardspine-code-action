@@ -1,11 +1,11 @@
 """
-
 Bundle Generator - Creates cryptographically verifiable evidence bundles.
 
 Primary output follows guardspine-spec v0.2.0. Legacy v1-style fields are
 retained for backward compatibility with existing consumers/tests.
 """
 
+from __future__ import annotations
 
 import hashlib
 import uuid

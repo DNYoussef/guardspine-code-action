@@ -75,8 +75,8 @@ class PIIWasmClient:
         # wasmtime-py WasiConfig expects file paths, not FDs.
         import tempfile
 
-        with tempfile.NamedTemporaryFile(mode='w+', delete=False) as f_in, \
-             tempfile.NamedTemporaryFile(mode='r+', delete=False) as f_out:
+        with tempfile.NamedTemporaryFile(mode='w+', delete=False, encoding='utf-8') as f_in, \
+             tempfile.NamedTemporaryFile(mode='r+', delete=False, encoding='utf-8') as f_out:
             
             f_in_path = f_in.name
             f_out_path = f_out.name
