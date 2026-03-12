@@ -41,6 +41,4 @@ COPY --from=builder /staging/ /
 
 WORKDIR /action
 
-COPY lib/pii-shield.wasm ./lib/pii-shield.wasm
-
 ENTRYPOINT ["python", "/action/entrypoint.py"]
