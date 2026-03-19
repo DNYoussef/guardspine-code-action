@@ -20,6 +20,7 @@ class TestAnalysisResultDefaults(unittest.TestCase):
         self.assertEqual(r.models_used, 0)
         self.assertEqual(r.consensus_risk, "")
         self.assertEqual(r.agreement_score, 0.0)
+        self.assertEqual(r.confidence_calibration, {})
         self.assertEqual(r.pii_shield, {"enabled": False})
         self.assertIsNone(r.sanitization)
 

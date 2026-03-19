@@ -19,6 +19,7 @@ from github.PullRequest import PullRequest
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
 from src.bundle_generator import BundleGenerator
+from src.confidence_calibrator import annotate_analysis_with_calibration, load_artifact
 from src.pr_commenter import PRCommenter
 from src.sarif_exporter import SARIFExporter
 from src.pii_shield import PIIShieldClient, PIIShieldError
@@ -231,12 +232,14 @@ def main():
 
     # Decision policy
     decision_policy_raw = get_env("INPUT_DECISION_POLICY", "standard")
+    confidence_calibrator_input = get_env("INPUT_CONFIDENCE_CALIBRATOR", "")
 
     # Policy and rubric locations
     workspace = Path(get_env("GITHUB_WORKSPACE", ".")).resolve()
     rubrics_dir = resolve_path(get_env("INPUT_RUBRICS_DIR", ".guardspine/rubrics"), workspace)
     risk_policy_path = resolve_path(get_env("INPUT_RISK_POLICY"), workspace)
     bundle_dir = resolve_path(get_env("INPUT_BUNDLE_DIR", ".guardspine/bundles"), workspace) or (workspace / ".guardspine" / "bundles")
+    confidence_calibrator_path = resolve_path(confidence_calibrator_input, workspace)
     decision_policy = decision_policy_raw
 
     if decision_policy_raw not in {"standard", "strict", "advisory"}:
@@ -252,6 +255,9 @@ def main():
 
     if risk_policy_path and not risk_policy_path.exists():
         print(f"::error::Risk policy file not found: {risk_policy_path}")
+        sys.exit(1)
+    if confidence_calibrator_input and (not confidence_calibrator_path or not confidence_calibrator_path.exists()):
+        print(f"::error::Confidence calibrator file not found: {confidence_calibrator_input}")
         sys.exit(1)
 
     rubric_path: Optional[Path] = None
@@ -387,6 +393,18 @@ def main():
             analysis["sanitization"] = dict(sanitization_summary)
     else:
         analysis["pii_shield"] = {"enabled": False}
+
+    if confidence_calibrator_path:
+        try:
+            calibrator_artifact = load_artifact(confidence_calibrator_path)
+            calibration_summary = annotate_analysis_with_calibration(analysis, calibrator_artifact)
+            print(
+                "::notice::Confidence calibrator applied "
+                f"({calibration_summary.get('source', 'unknown')})"
+            )
+        except Exception as exc:
+            print(f"::error::Failed to apply confidence calibrator: {exc}")
+            sys.exit(1)
     print(f"Files changed: {analysis['files_changed']}")
     print(f"Lines added: {analysis['lines_added']}")
     print(f"Lines removed: {analysis['lines_removed']}")
@@ -478,9 +496,13 @@ def main():
     models_used = analysis.get("models_used", 0)
     consensus_risk = analysis.get("consensus_risk", "")
     agreement_score = analysis.get("agreement_score", 0.0)
+    confidence_calibration = analysis.get("confidence_calibration", {})
     set_output("models_used", str(models_used))
     set_output("consensus_risk", consensus_risk)
     set_output("agreement_score", str(agreement_score))
+    calibrated_confidence = confidence_calibration.get("calibrated_verdict_p_correct")
+    set_output("calibrated_confidence", "" if calibrated_confidence is None else str(calibrated_confidence))
+    set_output("confidence_source", confidence_calibration.get("source", ""))
 
     # Post PR comment (Decision Card replaces old Diff Postcard)
     if post_comment:

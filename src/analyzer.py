@@ -82,6 +82,7 @@ class AnalysisResult:
     consensus_risk: str = ""
     agreement_score: float = 0.0
     ai_summary: dict = field(default_factory=dict)
+    confidence_calibration: dict = field(default_factory=dict)
 
     # PII-Shield enrichment (set by entrypoint)
     raw_diff_hash: str = ""

@@ -343,6 +343,7 @@ Export findings to GitHub Security tab:
 | `rubrics_dir` | Directory containing rubric YAML files | `.guardspine/rubrics` |
 | `risk_policy` | Path to YAML that overrides risk patterns/thresholds | - |
 | `bundle_dir` | Directory to write evidence bundles | `.guardspine/bundles` |
+| `confidence_calibrator` | Optional JSON artifact for calibrated `P(consensus verdict is correct)` | - |
 | **Model Configuration** | | |
 | `model_1` | First model (L1+). Format: `provider/model` or just `model` | Auto-detect |
 | `model_2` | Second model (L2+). Format: `provider/model` or just `model` | Auto-detect |
@@ -365,6 +366,48 @@ Export findings to GitHub Security tab:
 | `models_used` | Number of AI models that reviewed |
 | `consensus_risk` | Multi-model consensus: approve/request_changes/comment |
 | `agreement_score` | How much models agreed (0.0-1.0) |
+| `calibrated_confidence` | Optional calibrated probability that the consensus verdict is correct |
+| `confidence_source` | Source label for calibrated confidence metadata |
+
+### Confidence Calibration
+
+The action can attach a calibrated confidence score to the multi-model consensus without changing the review models or
+the inference path. This is a black-box calibrator trained on eval outcomes, not a self-reported model confidence.
+
+One-shot helper for the default corpora (`hand-crafted` + `real-cve`):
+
+```bash
+python eval/train_confidence_from_corpora.py
+```
+
+That writes merged rows under `eval/results/` and the calibrator artifact to
+`.guardspine/calibration/codeguard-confidence-v1.json`.
+
+1. Export labeled rows from eval:
+
+```bash
+python eval/run_eval.py --dataset hand-crafted --emit-calibration-jsonl eval/results/calibration.jsonl
+```
+
+2. Train a lean JSON artifact:
+
+```bash
+python eval/train_confidence_calibrator.py \
+  --input eval/results/calibration.jsonl \
+  --output .guardspine/calibration/codeguard-confidence-v1.json
+```
+
+3. Apply it from the monorepo workflow:
+
+```yaml
+- uses: DNYoussef/codeguard-action@v1
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    confidence_calibrator: .guardspine/calibration/codeguard-confidence-v1.json
+```
+
+When present, the artifact adds `calibrated_confidence` to action outputs and `confidence_calibration` metadata to the
+evidence bundle snapshot.
 
 ## Advanced Usage
 

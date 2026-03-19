@@ -24,12 +24,17 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, asdict
 from pathlib import Path
+from typing import Any
 
 _ROOT = Path(__file__).resolve().parent.parent
 _EVAL = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
 from src.analyzer import DiffAnalyzer
+from src.confidence_calibrator import (
+    make_consensus_training_row,
+    make_review_training_row,
+)
 from src.risk_classifier import RiskClassifier
 from src.decision_engine import Finding as AuditFinding, DecisionEngine, render_decision_card
 
@@ -118,7 +123,7 @@ def run_sample(
     engine: DecisionEngine,
     forced_tier: str | None = None,
     deliberate: bool = False,
-) -> Result:
+) -> tuple[Result, dict]:
     """Run one diff sample through the full pipeline."""
     errors = []
     start = time.monotonic()
@@ -177,7 +182,7 @@ def run_sample(
     delib_rounds = mmr.get("deliberation_rounds", 0)
     delib_early = mmr.get("early_exit", False)
 
-    return Result(
+    result = Result(
         sample=sample_path.name,
         dataset=dataset_name,
         category=category,
@@ -197,6 +202,28 @@ def run_sample(
         deliberation_rounds=delib_rounds,
         early_exit=delib_early,
     )
+    return result, analysis
+
+
+def build_calibration_rows(result: Result, analysis: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build labeled calibration rows from an eval sample."""
+
+    metadata = {
+        "sample": result.sample,
+        "dataset": result.dataset,
+        "category": result.category,
+        "forced_tier": result.forced_tier,
+        "tier_preliminary": result.tier_preliminary,
+        "tier_final": result.tier_final,
+    }
+
+    rows = [make_consensus_training_row(analysis, result.expected_flag, metadata)]
+    mmr = analysis.get("multi_model_review") or {}
+    for review in (mmr.get("reviews") or []):
+        if review.get("error"):
+            continue
+        rows.append(make_review_training_row(review, analysis, result.expected_flag, metadata))
+    return rows
 
 
 def _map_findings(finding_dicts: list) -> list[AuditFinding]:
@@ -399,6 +426,19 @@ def write_results(
     return out_path
 
 
+def write_calibration_rows(rows: list[dict[str, Any]], output_path: str | Path) -> Path:
+    """Write JSONL calibration rows for offline training."""
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True))
+            handle.write("\n")
+    print(f"Calibration rows: {path}")
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -486,6 +526,8 @@ def parse_args():
                     help="Fail if false-negative rate is >= this percentage")
     p.add_argument("--max-noise", type=float, default=DEFAULT_THRESHOLD_NOISE,
                     help="Reserved threshold for future noise metrics")
+    p.add_argument("--emit-calibration-jsonl", default=None,
+                    help="Write labeled calibration rows (JSONL) for confidence calibrator training")
     return p.parse_args()
 
 
@@ -549,6 +591,7 @@ def main():
 
     # Run
     results = []
+    calibration_rows: list[dict[str, Any]] = []
     t0 = time.monotonic()
 
     for i, (path, ds_name) in enumerate(samples, 1):
@@ -558,8 +601,10 @@ def main():
             rel = path.name
         print(f"\n[{i}/{len(samples)}] {rel}")
 
-        r = run_sample(path, ds_name, analyzer, classifier, engine, args.tier, args.deliberate)
+        r, analysis = run_sample(path, ds_name, analyzer, classifier, engine, args.tier, args.deliberate)
         results.append(r)
+        if args.emit_calibration_jsonl:
+            calibration_rows.extend(build_calibration_rows(r, analysis))
 
         label = "OK" if r.correct else ("FP" if r.false_positive else "FN")
         print(f"  {r.tier_preliminary}->{r.tier_final}  zones={r.zones}  findings={r.findings}  "
@@ -582,6 +627,8 @@ def main():
     stats = compute_stats(results, args.max_fp, args.max_fn)
     print_report(results, stats, elapsed, args.verbose, args.max_fp, args.max_fn)
     write_results(results, stats, args.tier, elapsed, args.max_fp, args.max_fn, args.max_noise)
+    if args.emit_calibration_jsonl:
+        write_calibration_rows(calibration_rows, args.emit_calibration_jsonl)
 
     # Exit code
     passed = stats.get("fp_pass", False) and stats.get("fn_pass", False)

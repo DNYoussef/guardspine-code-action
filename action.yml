@@ -125,6 +125,9 @@ inputs:
     description: 'Decision engine policy (standard, strict, advisory, or path to custom YAML)'
     required: false
     default: 'standard'
+  confidence_calibrator:
+    description: 'Optional path to a JSON black-box confidence calibrator artifact (relative to workspace allowed)'
+    required: false
   deliberate:
     description: 'Enable deliberation (multi-round cross-checking between AI models)'
     required: false
@@ -155,6 +158,10 @@ outputs:
     description: 'Multi-model consensus: approve, request_changes, or comment'
   agreement_score:
     description: 'How much models agreed (0.0-1.0)'
+  calibrated_confidence:
+    description: 'Optional calibrated probability that the consensus verdict is correct'
+  confidence_source:
+    description: 'Source label for calibrated confidence metadata'
   decision:
     description: 'Decision engine verdict: merge, merge-with-conditions, or block'
   merged:

@@ -120,6 +120,7 @@ class BundleGenerator:
         analysis_diff_hash = analysis.get("ai_diff_hash", analysis.get("diff_hash", ""))
         pii_shield = analysis.get("pii_shield", {"enabled": False})
         sanitization = analysis.get("sanitization")
+        confidence_calibration = analysis.get("confidence_calibration", {})
 
         # Extract per-model provenance for sealing into the hash chain.
         mmr = analysis.get("multi_model_review") or {}
@@ -150,6 +151,7 @@ class BundleGenerator:
                 "analysis_diff_hash": analysis_diff_hash,
                 "pii_shield": pii_shield,
                 "sanitization": sanitization,
+                "confidence_calibration": confidence_calibration,
                 "reviews_sealed": reviews_sealed,
             }
         )
@@ -235,6 +237,7 @@ class BundleGenerator:
                 "analysis_diff_hash": analysis_diff_hash,
                 "pii_shield": pii_shield,
                 "sanitization": sanitization,
+                "confidence_calibration": confidence_calibration,
             },
             "signatures": [],
         }
