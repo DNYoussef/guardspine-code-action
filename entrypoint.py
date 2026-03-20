@@ -617,7 +617,8 @@ def main():
         set_output("bundle_path", str(relative_bundle))
         print(f"Bundle saved: {relative_bundle}")
         print(f"Bundle ID: {bundle['bundle_id']}")
-
+        print("guardspine_api_url: ", guardspine_api_url)
+        print("guardspine_api_key set: ", guardspine_api_key and len(guardspine_api_key))
         # Sync bundle to GuardSpine dashboard
         if guardspine_api_url and guardspine_api_key:
             if _post_to_backend(guardspine_api_url, guardspine_api_key, "/bundles/import", bundle):

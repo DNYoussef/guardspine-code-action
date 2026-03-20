@@ -171,11 +171,41 @@ outputs:
 runs:
   using: 'docker'
   image: 'docker://ghcr.io/dnyoussef/codeguard-action:main'
-  args:
-    - ${{ inputs.risk_threshold }}
-    - ${{ inputs.rubric }}
-    - ${{ inputs.github_token }}
-    - ${{ inputs.post_comment }}
-    - ${{ inputs.generate_bundle }}
-    - ${{ inputs.upload_sarif }}
-    - ${{ inputs.fail_on_high_risk }}
+  env:
+    INPUT_RISK_THRESHOLD: ${{ inputs.risk_threshold }}
+    INPUT_RUBRIC: ${{ inputs.rubric }}
+    INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+    INPUT_POST_COMMENT: ${{ inputs.post_comment }}
+    INPUT_GENERATE_BUNDLE: ${{ inputs.generate_bundle }}
+    INPUT_UPLOAD_SARIF: ${{ inputs.upload_sarif }}
+    INPUT_FAIL_ON_HIGH_RISK: ${{ inputs.fail_on_high_risk }}
+    INPUT_OPENAI_API_KEY: ${{ inputs.openai_api_key }}
+    INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+    INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
+    INPUT_OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
+    INPUT_OLLAMA_HOST: ${{ inputs.ollama_host }}
+    INPUT_OLLAMA_MODEL: ${{ inputs.ollama_model }}
+    INPUT_MODEL_1: ${{ inputs.model_1 }}
+    INPUT_MODEL_2: ${{ inputs.model_2 }}
+    INPUT_MODEL_3: ${{ inputs.model_3 }}
+    INPUT_AI_REVIEW: ${{ inputs.ai_review }}
+    INPUT_DELIBERATE: ${{ inputs.deliberate }}
+    INPUT_PII_SHIELD_ENABLED: ${{ inputs.pii_shield_enabled }}
+    INPUT_PII_SHIELD_MODE: ${{ inputs.pii_shield_mode }}
+    INPUT_PII_SHIELD_ENDPOINT: ${{ inputs.pii_shield_endpoint }}
+    INPUT_PII_SHIELD_API_KEY: ${{ inputs.pii_shield_api_key }}
+    INPUT_PII_SHIELD_TIMEOUT: ${{ inputs.pii_shield_timeout }}
+    INPUT_PII_SHIELD_FAIL_CLOSED: ${{ inputs.pii_shield_fail_closed }}
+    INPUT_PII_SHIELD_SALT_FINGERPRINT: ${{ inputs.pii_shield_salt_fingerprint }}
+    INPUT_PII_SAFE_REGEX_LIST: ${{ inputs.pii_safe_regex_list }}
+    INPUT_PII_SHIELD_SANITIZE_COMMENTS: ${{ inputs.pii_shield_sanitize_comments }}
+    INPUT_PII_SHIELD_SANITIZE_BUNDLE: ${{ inputs.pii_shield_sanitize_bundle }}
+    INPUT_PII_SHIELD_SANITIZE_SARIF: ${{ inputs.pii_shield_sanitize_sarif }}
+    INPUT_RUBRICS_DIR: ${{ inputs.rubrics_dir }}
+    INPUT_RISK_POLICY: ${{ inputs.risk_policy }}
+    INPUT_BUNDLE_DIR: ${{ inputs.bundle_dir }}
+    INPUT_DECISION_POLICY: ${{ inputs.decision_policy }}
+    INPUT_AUTO_MERGE: ${{ inputs.auto_merge }}
+    INPUT_AUTO_MERGE_METHOD: ${{ inputs.auto_merge_method }}
+    INPUT_GUARDSPINE_API_URL: ${{ inputs.guardspine_api_url }}
+    INPUT_GUARDSPINE_API_KEY: ${{ inputs.guardspine_api_key }}

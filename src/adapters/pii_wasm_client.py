@@ -102,9 +102,13 @@ class PIIWasmClient:
             except wasmtime.ExitTrap as e:
                 # All other codes (e.g., 1 or 2 on Go panic) must raise an error.
                 if e.code != 0:
-                    raise RuntimeError(f"WASM execution failed with exit code: {e.code}") from e
+                    import logging
+                    logging.getLogger(__name__).error(f"PII-Shield WASM Module failed: {str(e)}")
+                    raise RuntimeError("WASM processing failed") from e
             except Exception as e:
-                 raise RuntimeError(f"WASM execution error: {e}") from e
+                import logging
+                logging.getLogger(__name__).error(f"PII-Shield WASM Module failed: {str(e)}")
+                raise RuntimeError("WASM processing failed") from e
                 
             # Read output
             with open(f_out_path, 'r', encoding='utf-8') as f:
@@ -112,6 +116,10 @@ class PIIWasmClient:
                 
             return output.strip()
             
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"PII-Shield WASM Module failed: {str(e)}")
+            raise RuntimeError("WASM processing failed") from e
         finally:
             # Cleanup
             if os.path.exists(f_in_path):
