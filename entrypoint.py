@@ -199,6 +199,9 @@ def main():
     """Main entrypoint for the action."""
     # Parse inputs from environment (set by GitHub Actions)
     risk_threshold = get_env("INPUT_RISK_THRESHOLD", "L3")
+    if risk_threshold not in ("L0", "L1", "L2", "L3", "L4"):
+        print(f"::error::Invalid risk_threshold '{risk_threshold}'. Must be one of: L0, L1, L2, L3, L4")
+        sys.exit(1)
     rubric = get_env("INPUT_RUBRIC", "default")
     github_token = get_env("INPUT_GITHUB_TOKEN")
     post_comment = parse_bool(get_env("INPUT_POST_COMMENT", "true"))
