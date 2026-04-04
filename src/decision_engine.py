@@ -1,9 +1,10 @@
 """
 Decision Engine - findings in, one decision out.
 
-Vendored from guardspine-product (decision.engine + code_guard.audit.Finding).
-Last synced: 2026-03-08. Re-sync manually when guardspine-product decision logic changes.
-Kept vendored because codeguard-action runs in Docker without private pip indexes.
+Canonical home: codeguard-action/src/decision_engine.py
+History: originally developed in guardspine-product, moved here 2026-03-08.
+guardspine-product was frozen on 2026-04-04 (Phase 1). This is now the
+sole canonical copy. There is no upstream to sync from.
 
 No abstractions. No plugin system. Just a pure function that
 collapses a pile of findings into: merge, merge-with-conditions, or block.
