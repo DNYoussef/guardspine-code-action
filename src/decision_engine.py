@@ -44,6 +44,17 @@ class DecisionPacket:
     advisory: list[Finding] = field(default_factory=list)
     total_findings: int = 0
     policy_name: str = "standard"
+    risk_tier: str = ""
+    threshold: str = ""
+    requires_approval: bool = False
+    review_gate_reason: str | None = None
+
+    @property
+    def effective_decision(self) -> str:
+        """Fold human-review gating into the rendered merge posture."""
+        if self.decision == "merge" and self.requires_approval:
+            return "merge-with-conditions"
+        return self.decision
 
 
 # ---------------------------------------------------------------------------
@@ -171,13 +182,35 @@ def render_decision_card(packet: DecisionPacket) -> str:
         "merge-with-conditions": "CONDITIONAL - Reviewer action needed",
         "block": "BLOCKED - Cannot merge",
     }
+    decision = packet.effective_decision
+    render_conditions = list(packet.conditions)
+
+    if packet.review_gate_reason and packet.decision != "block":
+        render_conditions.insert(
+            0,
+            Finding(
+                severity="high",
+                category="governance",
+                location=None,
+                description=packet.review_gate_reason,
+                recommendation="Require manual reviewer approval and release gate sign-off",
+                provable=False,
+            ),
+        )
 
     lines = [
-        f"## [{icon.get(packet.decision, '??')}] GuardSpine: {label.get(packet.decision, packet.decision)}",
+        f"## [{icon.get(decision, '??')}] GuardSpine: {label.get(decision, decision)}",
         "",
         f"**Policy:** {packet.policy_name} | **Findings:** {packet.total_findings}",
         "",
     ]
+
+    if packet.risk_tier:
+        approval_state = "required" if packet.requires_approval else "not required"
+        lines.extend([
+            f"**Risk tier:** {packet.risk_tier} | **Human review:** {approval_state}",
+            "",
+        ])
 
     if packet.hard_blocks:
         lines.append("### Hard Blocks (provable failures)")
@@ -187,10 +220,10 @@ def render_decision_card(packet: DecisionPacket) -> str:
             lines.append(f"- **{f.severity.upper()}** [{f.category}]{loc}: {f.description}")
         lines.append("")
 
-    if packet.conditions:
+    if render_conditions:
         lines.append("### Reviewer Action Required (max 2)")
         lines.append("")
-        for i, f in enumerate(packet.conditions, 1):
+        for i, f in enumerate(render_conditions, 1):
             loc = f" (`{f.location}`)" if f.location else ""
             lines.append(f"{i}. **{f.severity.upper()}** [{f.category}]{loc}: {f.description}")
             lines.append(f"   > {f.recommendation}")
@@ -205,7 +238,7 @@ def render_decision_card(packet: DecisionPacket) -> str:
         lines.append("</details>")
         lines.append("")
 
-    if not packet.hard_blocks and not packet.conditions and not packet.advisory:
+    if not packet.hard_blocks and not render_conditions and not packet.advisory:
         lines.append("No issues found. Clean merge.")
         lines.append("")
 

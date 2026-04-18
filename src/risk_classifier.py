@@ -547,7 +547,7 @@ class RiskClassifier:
 
         # Calculate risk drivers
         risk_drivers = self._calculate_drivers(
-            files, sensitive_zones, findings, ai_summary
+            files, sensitive_zones, findings, ai_summary, file_score
         )
 
         # Determine final tier
@@ -586,36 +586,22 @@ class RiskClassifier:
         max_score = 0
 
         for file in files:
-            path = file.get("path", "")
-
-            # Check L4 patterns first
-            for pattern in self.file_patterns["L4"]:
-                if re.search(pattern, path, re.IGNORECASE):
-                    max_score = max(max_score, 4)
-
-            for pattern in self.file_patterns["L3"]:
-                if re.search(pattern, path, re.IGNORECASE):
-                    max_score = max(max_score, 3)
-
-            # L0 patterns reduce score (but don't override higher)
-            is_trivial = any(
-                re.search(p, path, re.IGNORECASE)
-                for p in self.file_patterns["L0"]
-            )
-            is_test = any(
-                re.search(p, path, re.IGNORECASE)
-                for p in self.file_patterns["L1"]
-            )
-
-            if max_score == 0:
-                if is_trivial:
-                    max_score = 0
-                elif is_test:
-                    max_score = 1
-                else:
-                    max_score = 2
+            max_score = max(max_score, self._classify_file_path(file.get("path", ""))["score"])
 
         return max_score
+
+    def _classify_file_path(self, path: str) -> dict[str, Any]:
+        """Return the highest-priority file-pattern classification for one path."""
+        for tier, score in (("L4", 4), ("L3", 3), ("L1", 1), ("L0", 0)):
+            matches = [
+                pattern
+                for pattern in self.file_patterns[tier]
+                if re.search(pattern, path, re.IGNORECASE)
+            ]
+            if matches:
+                return {"tier": tier, "score": score, "patterns": matches}
+
+        return {"tier": "L2", "score": 2, "patterns": []}
 
     def _score_zones(self, zones: list) -> int:
         """Score based on sensitive zones detected."""
@@ -731,7 +717,12 @@ class RiskClassifier:
         return findings
 
     def _calculate_drivers(
-        self, files: list, zones: list, findings: list, ai_summary: dict
+        self,
+        files: list,
+        zones: list,
+        findings: list,
+        ai_summary: dict,
+        file_score: int,
     ) -> list[dict]:
         """Calculate top risk drivers."""
         drivers = []
@@ -788,6 +779,28 @@ class RiskClassifier:
                 drivers.append({
                     "type": "ai_concern",
                     "description": concern
+                })
+
+        if not drivers and file_score > 0:
+            ranked_files = []
+            for file in files:
+                path = file.get("path", "")
+                if not path:
+                    continue
+                classification = self._classify_file_path(path)
+                ranked_files.append((classification["score"], path, classification))
+
+            ranked_files.sort(key=lambda item: item[0], reverse=True)
+            for score, path, classification in ranked_files[:3]:
+                drivers.append({
+                    "type": "file_pattern",
+                    "tier": classification["tier"],
+                    "score": score,
+                    "file": path,
+                    "matched_patterns": classification["patterns"][:3],
+                    "description": (
+                        f"File path `{path}` contributed {classification['tier']} risk scoring"
+                    ),
                 })
 
         return drivers[:5]  # Top 5 drivers

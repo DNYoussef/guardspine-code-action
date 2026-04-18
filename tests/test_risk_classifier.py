@@ -98,6 +98,26 @@ class RiskClassifierTests(unittest.TestCase):
         # Description should mention the file
         self.assertIn("src/auth.py", first["description"])
 
+    def test_file_pattern_drivers_fill_empty_explanations(self):
+        analysis = {
+            "files": [{"path": "payments/processor.py", "hunks": []}],
+            "sensitive_zones": [],
+            "lines_added": 1,
+            "lines_removed": 0,
+        }
+        classifier = RiskClassifier(rubric="default")
+        result = classifier.classify(analysis)
+
+        self.assertEqual(result["risk_tier"], "L4")
+        file_driver = next(
+            (d for d in result["risk_drivers"] if d["type"] == "file_pattern"),
+            None,
+        )
+        self.assertIsNotNone(file_driver, "Expected file-pattern risk driver")
+        self.assertEqual(file_driver["tier"], "L4")
+        self.assertEqual(file_driver["file"], "payments/processor.py")
+        self.assertIn("payments/processor.py", file_driver["description"])
+
     def test_bundle_path_is_relative(self):
         """Ensure set_output bundle_path would be relative to workspace."""
         from pathlib import PurePosixPath

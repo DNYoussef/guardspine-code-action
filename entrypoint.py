@@ -480,26 +480,28 @@ def main():
     audit_findings = _map_findings(findings)
     engine = DecisionEngine(decision_policy)
     decision_packet = engine.decide(audit_findings)
-    if risk_tier == "L4" and decision_packet.decision == "merge":
-        print("::warning::L4 risk cannot auto-merge; forcing merge-with-conditions")
-        decision_packet.decision = "merge-with-conditions"
-        decision_packet.conditions = list(decision_packet.conditions) + [
-            AuditFinding(
-                severity="high",
-                category="governance",
-                location=None,
-                description="L4 risk tier requires human approval before merge",
-                recommendation="Require manual reviewer approval and release gate sign-off",
-                provable=False,
-            )
-        ]
-        decision_packet.total_findings = max(decision_packet.total_findings, len(audit_findings))
-
     requires_approval = tier_exceeds_threshold or decision_packet.decision != "merge"
+    review_gate_reason = None
+    if tier_exceeds_threshold and decision_packet.decision == "merge":
+        review_gate_reason = (
+            f"Risk tier {risk_tier} exceeds threshold {risk_threshold}. Human review required."
+        )
+
+    decision_packet.risk_tier = risk_tier
+    decision_packet.threshold = risk_threshold
+    decision_packet.requires_approval = requires_approval
+    decision_packet.review_gate_reason = review_gate_reason
+    final_decision = decision_packet.effective_decision
+    synthetic_conditions = 1 if review_gate_reason else 0
+    risk_result["requires_approval"] = requires_approval
+    risk_result["decision"] = final_decision
+    if review_gate_reason:
+        risk_result["review_gate_reason"] = review_gate_reason
+
     decision_card_md = render_decision_card(decision_packet)
-    print(f"Decision: {decision_packet.decision}")
+    print(f"Decision: {final_decision}")
     print(f"Hard blocks: {len(decision_packet.hard_blocks)}")
-    print(f"Conditions: {len(decision_packet.conditions)}")
+    print(f"Conditions: {len(decision_packet.conditions) + synthetic_conditions}")
     print(f"Advisory: {len(decision_packet.advisory)}")
     print("::endgroup::")
 
@@ -508,7 +510,7 @@ def main():
     set_output("risk_drivers", json.dumps(risk_drivers))
     set_output("findings_count", str(len(findings)))
     set_output("requires_approval", str(requires_approval).lower())
-    set_output("decision", decision_packet.decision)
+    set_output("decision", final_decision)
 
     # Multi-model outputs
     models_used = analysis.get("models_used", 0)
@@ -678,23 +680,30 @@ def main():
             "pr_number": pr_number,
             "commit_sha": github_sha,
             "risk_tier": risk_tier,
-            "decision": decision_packet.decision,
+            "decision": final_decision,
             "bundle_id": bundle.get("bundle_id", ""),
             "findings_count": len(findings) if findings else 0,
             "hard_blocks": len(decision_packet.hard_blocks),
-            "conditions": len(decision_packet.conditions) if hasattr(decision_packet, "conditions") else 0,
+            "conditions": (
+                len(decision_packet.conditions) + synthetic_conditions
+                if hasattr(decision_packet, "conditions")
+                else synthetic_conditions
+            ),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         if _post_to_backend(guardspine_api_url, guardspine_api_key, "/approvals", approval_payload):
             print("Approval record synced to GuardSpine")
 
     # Determine exit status (decision engine is authoritative)
-    if decision_packet.decision == "block":
+    if final_decision == "block":
         print(f"::error::Decision Engine: BLOCKED ({len(decision_packet.hard_blocks)} provable failures)")
         print(f"::error file=GUARDSPINE::Merge blocked by {len(decision_packet.hard_blocks)} provable finding(s).")
         sys.exit(1)
-    elif decision_packet.decision == "merge-with-conditions":
-        print(f"::warning::Decision Engine: CONDITIONAL ({len(decision_packet.conditions)} reviewer action(s) required)")
+    elif final_decision == "merge-with-conditions":
+        print(
+            f"::warning::Decision Engine: CONDITIONAL "
+            f"({len(decision_packet.conditions) + synthetic_conditions} reviewer action(s) required)"
+        )
         if fail_on_high_risk:
             sys.exit(1)
     else:
