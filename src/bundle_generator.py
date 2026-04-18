@@ -217,7 +217,11 @@ class BundleGenerator:
                 "risk_drivers": risk_result.get("risk_drivers", []),
                 "findings": risk_result.get("findings", []),
                 "rationale": risk_result.get("rationale", ""),
-                "requires_approval": risk_result.get("risk_tier", "L2") in ("L3", "L4"),
+                "requires_approval": risk_result.get(
+                    "requires_approval",
+                    risk_result.get("risk_tier", "L2") in ("L3", "L4"),
+                ),
+                "decision": risk_result.get("decision", "merge"),
             },
             "sanitization": sanitization,
             "analysis_snapshot": {

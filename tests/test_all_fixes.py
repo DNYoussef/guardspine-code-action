@@ -32,6 +32,7 @@ from risk_classifier import RiskClassifier, Finding
 from bundle_generator import BundleGenerator, verify_bundle_chain
 from pr_commenter import PRCommenter
 from sarif_exporter import SARIFExporter
+from decision_engine import DecisionPacket, render_decision_card
 
 # Stub GitHub objects for testing
 from github import Github
@@ -341,6 +342,24 @@ class TestPRCommentRendering(unittest.TestCase):
         body = pr._comments[0].body
         self.assertIn("L0", body)
         self.assertNotIn("Findings Summary", body)
+
+    def test_decision_card_respects_human_review_gate(self):
+        packet = DecisionPacket(
+            decision="merge",
+            total_findings=0,
+            policy_name="standard",
+            risk_tier="L3",
+            threshold="L3",
+            requires_approval=True,
+            review_gate_reason="Risk tier L3 exceeds threshold L3. Human review required.",
+        )
+
+        body = render_decision_card(packet)
+
+        self.assertIn("CONDITIONAL - Reviewer action needed", body)
+        self.assertIn("Risk tier L3 exceeds threshold L3. Human review required.", body)
+        self.assertIn("Human review:** required", body)
+        self.assertNotIn("No issues found. Clean merge.", body)
 
 
 # ===========================================================================
