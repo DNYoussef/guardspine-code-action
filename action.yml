@@ -163,6 +163,10 @@ outputs:
     description: 'How much models agreed (0.0-1.0)'
   decision:
     description: 'Decision engine verdict: merge, merge-with-conditions, or block'
+  verdict:
+    description: 'Stable verdict alias (APPROVE | CONDITIONS | BLOCK) mapped from decision for workflows that gate on outputs.verdict.'
+  bundle_id:
+    description: 'Evidence bundle identifier (empty string if generate_bundle is false). Stable alias for workflows that reference outputs.bundle_id.'
   merged:
     description: 'Whether PR was auto-merged'
   merge_sha:

@@ -511,6 +511,7 @@ def main():
     set_output("findings_count", str(len(findings)))
     set_output("requires_approval", str(requires_approval).lower())
     set_output("decision", final_decision)
+    set_output("verdict", map_decision_to_verdict(final_decision))
 
     # Multi-model outputs
     models_used = analysis.get("models_used", 0)
@@ -620,6 +621,7 @@ def main():
         except ValueError:
             relative_bundle = bundle_path
         set_output("bundle_path", str(relative_bundle))
+        set_output("bundle_id", bundle.get("bundle_id", ""))
         print(f"Bundle saved: {relative_bundle}")
         print(f"Bundle ID: {bundle['bundle_id']}")
         print("guardspine_api_url: ", guardspine_api_url)
@@ -866,6 +868,19 @@ def _fetch_pr_diff_paginated(pr, token: str | None) -> str:
                 parts.append(f"diff --git a/{f['filename']} b/{f['filename']}\n{patch}")
         page += 1
     return "\n".join(parts)
+
+
+_VERDICT_MAP = {
+    "merge": "APPROVE",
+    "merge-with-conditions": "CONDITIONS",
+    "block": "BLOCK",
+}
+
+
+def map_decision_to_verdict(decision: str) -> str:
+    """Map decision engine verdict (merge/merge-with-conditions/block) to the stable workflow
+    alias consumed by downstream repos (APPROVE/CONDITIONS/BLOCK)."""
+    return _VERDICT_MAP.get(decision, "UNKNOWN")
 
 
 def set_output(name: str, value: str):
