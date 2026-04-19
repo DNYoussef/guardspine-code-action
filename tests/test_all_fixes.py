@@ -27,12 +27,14 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tests" / "stubs"))
+sys.path.insert(0, str(ROOT))
 
 from risk_classifier import RiskClassifier, Finding
 from bundle_generator import BundleGenerator, verify_bundle_chain
 from pr_commenter import PRCommenter
 from sarif_exporter import SARIFExporter
 from decision_engine import DecisionPacket, render_decision_card
+from entrypoint import map_decision_to_verdict
 
 # Stub GitHub objects for testing
 from github import Github
@@ -664,6 +666,28 @@ class TestFullPipeline(unittest.TestCase):
         print(f"  Bundle path: {relative}")
         print(f"  PR comment: {len(body)} chars")
         print(f"{'='*60}")
+
+
+class TestVerdictCompatAlias(unittest.TestCase):
+    """Reviewer-style verdict alias for downstream workflows that gate on outputs.verdict.
+    See W2.2.5 audit finding: GuardSpine codeguard.yml referenced outputs.verdict since
+    inception, but the action never emitted it. This alias closes that gap with a stable
+    semantic mapping."""
+
+    def test_merge_maps_to_approve(self):
+        self.assertEqual(map_decision_to_verdict("merge"), "APPROVE")
+
+    def test_merge_with_conditions_maps_to_request_changes(self):
+        self.assertEqual(map_decision_to_verdict("merge-with-conditions"), "REQUEST_CHANGES")
+
+    def test_block_maps_to_block(self):
+        self.assertEqual(map_decision_to_verdict("block"), "BLOCK")
+
+    def test_unknown_decision_maps_to_unknown(self):
+        self.assertEqual(map_decision_to_verdict("something-else"), "UNKNOWN")
+
+    def test_empty_decision_maps_to_unknown(self):
+        self.assertEqual(map_decision_to_verdict(""), "UNKNOWN")
 
 
 if __name__ == "__main__":
