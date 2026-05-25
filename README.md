@@ -3,7 +3,7 @@
 **AI-powered code governance with cryptographically verifiable evidence bundles**
 
 [![GitHub Marketplace](https://img.shields.io/badge/Marketplace-GuardSpine%20CodeGuard-blue?logo=github)](https://github.com/marketplace/actions/guardspine-codeguard)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ---
 
@@ -806,7 +806,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License -- see [LICENSE](LICENSE) for details.
+Apache License 2.0 -- see [LICENSE](LICENSE) for details.
 
 ---
 
