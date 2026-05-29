@@ -29,6 +29,13 @@ from entrypoint import _map_findings, fetch_pr_diff, main, set_output
 from src.decision_engine import DecisionEngine
 
 
+class TestActionSupplyChainRegressions(unittest.TestCase):
+    def test_action_uses_checked_out_dockerfile_not_mutable_main_image(self):
+        action_yml = (ROOT / "action.yml").read_text(encoding="utf-8")
+        self.assertIn("image: 'Dockerfile'", action_yml)
+        self.assertNotIn("ghcr.io/dnyoussef/codeguard-action:main", action_yml)
+
+
 class TestRubricSchemaCompatibility(unittest.TestCase):
     def test_builtin_security_rubric_with_patterns_is_compiled(self):
         rubric_path = ROOT / "rubrics" / "builtin" / "security.yaml"
@@ -79,6 +86,30 @@ class TestDecisionIntegrityRegressions(unittest.TestCase):
         self.assertFalse(
             risk["risk_tier"] == "L4" and packet.decision == "merge",
             "L4 risk with security findings must not produce MERGE",
+        )
+
+    def test_model_approve_cannot_soften_deterministic_l3_to_merge(self):
+        analysis = {
+            "files": [{"path": "src/auth/session.py", "hunks": []}],
+            "sensitive_zones": [
+                {"zone": "auth", "file": "src/auth/session.py", "line": 42},
+            ],
+            "lines_added": 2,
+            "lines_removed": 0,
+            "consensus_risk": "approve",
+            "agreement_score": 1.0,
+        }
+
+        risk = RiskClassifier().classify(analysis)
+        packet = DecisionEngine("standard").decide(_map_findings(risk["findings"]))
+        auth_finding = next(f for f in risk["findings"] if f.get("zone") == "auth")
+
+        self.assertEqual(risk["risk_tier"], "L3")
+        self.assertEqual(auth_finding["severity"], "high")
+        self.assertNotEqual(
+            packet.decision,
+            "merge",
+            "Model approval must not turn deterministic L3 findings into MERGE",
         )
 
     def test_ai_opinion_only_findings_cannot_hard_block(self):

@@ -35,6 +35,19 @@ class PIIWasmClient:
         self.linker = Linker(self.engine)
         self.linker.define_wasi()
 
+    def _wasi_env(self) -> list[tuple[str, str]]:
+        """Return the minimal non-secret environment the WASM detector needs."""
+        allowed_names = {
+            "PII_ENTROPY_THRESHOLD",
+            "PII_SAFE_REGEX_LIST",
+            "PII_SHIELD_SALT_FINGERPRINT",
+        }
+        return [
+            (name, value)
+            for name, value in os.environ.items()
+            if name in allowed_names
+        ]
+
     def redact(self, text: str) -> str:
         # Each call needs a fresh store/WASI context because the Go runtime 
         # executes main() and exits, or processes a stream.
@@ -57,7 +70,7 @@ class PIIWasmClient:
         # Configure WASI
         wasi = WasiConfig()
         wasi.inherit_stderr() # Useful for debugging
-        wasi.inherit_env()    # Pass ENV vars (PII_ENTROPY_THRESHOLD etc) directly!
+        wasi.env = self._wasi_env()
         
         # Input/Output handling
         # We need to capture stdout.
