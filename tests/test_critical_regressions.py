@@ -88,6 +88,30 @@ class TestDecisionIntegrityRegressions(unittest.TestCase):
             "L4 risk with security findings must not produce MERGE",
         )
 
+    def test_model_approve_cannot_soften_deterministic_l3_to_merge(self):
+        analysis = {
+            "files": [{"path": "src/auth/session.py", "hunks": []}],
+            "sensitive_zones": [
+                {"zone": "auth", "file": "src/auth/session.py", "line": 42},
+            ],
+            "lines_added": 2,
+            "lines_removed": 0,
+            "consensus_risk": "approve",
+            "agreement_score": 1.0,
+        }
+
+        risk = RiskClassifier().classify(analysis)
+        packet = DecisionEngine("standard").decide(_map_findings(risk["findings"]))
+        auth_finding = next(f for f in risk["findings"] if f.get("zone") == "auth")
+
+        self.assertEqual(risk["risk_tier"], "L3")
+        self.assertEqual(auth_finding["severity"], "high")
+        self.assertNotEqual(
+            packet.decision,
+            "merge",
+            "Model approval must not turn deterministic L3 findings into MERGE",
+        )
+
     def test_ai_opinion_only_findings_cannot_hard_block(self):
         packet = DecisionEngine("standard").decide(_map_findings([
             {

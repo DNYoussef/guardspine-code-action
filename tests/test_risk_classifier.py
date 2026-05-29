@@ -219,8 +219,8 @@ class RiskClassifierTests(unittest.TestCase):
     # AI consensus wiring tests (P0 fix)
     # ------------------------------------------------------------------
 
-    def test_ai_approve_downgrades_zone_findings(self):
-        """When AI approves with high agreement, zone findings downgrade."""
+    def test_ai_approve_cannot_downgrade_l3_zone_findings(self):
+        """AI approve must not soften deterministic L3 escalation."""
         analysis = {
             "files": [{"path": "src/utils.py", "hunks": []}],
             "sensitive_zones": [
@@ -234,12 +234,54 @@ class RiskClassifierTests(unittest.TestCase):
         classifier = RiskClassifier(rubric="default")
         result = classifier.classify(analysis)
 
-        # auth zone is normally "high" -> double downgrade to "low" when AI approves
-        # (single downgrade left high->medium which still triggered conditions)
+        # auth zone is deterministic L3, so model approval cannot downgrade it.
         auth_findings = [f for f in result["findings"] if f.get("zone") == "auth"]
         self.assertTrue(len(auth_findings) > 0)
-        self.assertEqual(auth_findings[0]["severity"], "low",
-                         "AI approve should double-downgrade auth finding from high to low")
+        self.assertEqual(auth_findings[0]["severity"], "high",
+                         "AI approve must not downgrade deterministic L3 auth findings")
+        self.assertEqual(result["risk_tier"], "L3")
+
+    def test_ai_approve_can_downgrade_lower_tier_zone_findings(self):
+        """AI approve can still soften lower-tier keyword-only findings."""
+        analysis = {
+            "files": [{"path": "src/utils.py", "hunks": []}],
+            "sensitive_zones": [
+                {"zone": "config", "file": "src/utils.py", "line": 10},
+            ],
+            "lines_added": 3,
+            "lines_removed": 0,
+            "consensus_risk": "approve",
+            "agreement_score": 0.9,
+        }
+        classifier = RiskClassifier(rubric="default")
+        result = classifier.classify(analysis)
+
+        config_findings = [f for f in result["findings"] if f.get("zone") == "config"]
+        self.assertTrue(len(config_findings) > 0)
+        self.assertEqual(config_findings[0]["severity"], "info",
+                         "AI approve should still double-downgrade non-L3 zone findings")
+        self.assertEqual(result["risk_tier"], "L2")
+
+    def test_ai_comment_cannot_downgrade_l4_zone_findings(self):
+        """AI uncertainty must not soften deterministic L4 escalation."""
+        analysis = {
+            "files": [{"path": "src/checkout.py", "hunks": []}],
+            "sensitive_zones": [
+                {"zone": "payment", "file": "src/checkout.py", "line": 10},
+            ],
+            "lines_added": 3,
+            "lines_removed": 0,
+            "consensus_risk": "comment",
+            "agreement_score": 1.0,
+        }
+        classifier = RiskClassifier(rubric="default")
+        result = classifier.classify(analysis)
+
+        payment_findings = [f for f in result["findings"] if f.get("zone") == "payment"]
+        self.assertTrue(len(payment_findings) > 0)
+        self.assertEqual(payment_findings[0]["severity"], "critical",
+                         "AI comment must not downgrade deterministic L4 payment findings")
+        self.assertEqual(result["risk_tier"], "L4")
 
     def test_ai_approve_does_not_downgrade_rubric_findings(self):
         """AI approve should NOT downgrade rubric-based findings."""

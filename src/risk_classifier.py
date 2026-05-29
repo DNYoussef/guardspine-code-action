@@ -434,10 +434,13 @@ class RiskClassifier:
         sensitive_zones = analysis.get("sensitive_zones", [])
         ai_summary = analysis.get("ai_summary", {})
 
-        # Calculate scores
+        # Calculate deterministic scores. AI review can add evidence, but it
+        # must not lower the tier floor set by local checks.
         file_score = self._score_files(files)
         zone_score = self._score_zones(sensitive_zones)
         size_score = self._score_size(analysis)
+        deterministic_score = max(file_score, zone_score, size_score)
+        protect_deterministic_escalation = deterministic_score >= 3
 
         # Collect findings
         findings = self._collect_findings(files, sensitive_zones)
@@ -454,19 +457,23 @@ class RiskClassifier:
         agreement_score = analysis.get("agreement_score", 0.0)
 
         if consensus_risk == "approve" and agreement_score >= 0.6:
-            # AI majority approved: double-downgrade zone-only findings.
+            # AI majority approved: double-downgrade lower-tier zone findings.
             # Threshold 0.6 = simple majority (2/3 at L3, unanimous at L1/L2).
             # Double downgrade (critical->medium, high->low) drops findings
             # below DecisionEngine condition_rules (high+provable), making
             # them advisory-only. Semantically correct: zone findings are
             # keyword matches, and the AI confirmed they're safe.
             # Rubric findings are NOT downgraded (they are organizational policy).
+            # Deterministic L3/L4 escalations are also not downgraded: model
+            # approval is untrusted evidence and cannot bypass human review.
             for f in findings:
                 if f.zone and not f.rule_id.startswith("RUBRIC"):
+                    if protect_deterministic_escalation:
+                        continue
                     original = f.severity
                     f.severity = self._downgrade_severity(f.severity)
                     f.severity = self._downgrade_severity(f.severity)
-                    # Never downgrade critical deterministic signals below "high".
+                    # Never downgrade critical deterministic checks below "high".
                     if original == "critical" and f.severity in ("medium", "low", "info"):
                         f.severity = "high"
 
@@ -521,11 +528,14 @@ class RiskClassifier:
                 ))
 
         elif consensus_risk == "comment":
-            # AI is uncertain: single-downgrade zone findings (soften keyword
+            # AI is uncertain: single-downgrade lower-tier zone findings (soften keyword
             # matches the AI couldn't confirm) and inject medium-severity
-            # findings from AI concerns for the evidence bundle.
+            # findings from AI concerns for the evidence bundle. Deterministic
+            # L3/L4 escalations remain enforced.
             for f in findings:
                 if f.zone and not f.rule_id.startswith("RUBRIC"):
+                    if protect_deterministic_escalation:
+                        continue
                     f.severity = self._downgrade_severity(f.severity)
             mmr = analysis.get("multi_model_review", {})
             ai_concerns = []
@@ -550,8 +560,9 @@ class RiskClassifier:
             files, sensitive_zones, findings, ai_summary, file_score
         )
 
-        # Determine final tier
-        max_score = max(file_score, zone_score, size_score)
+        # Determine final tier. Start from the deterministic floor so model
+        # output can never reduce L3/L4 escalation.
+        max_score = deterministic_score
 
         # Boost for rubric findings
         if any(f.severity == "critical" for f in findings):
@@ -569,6 +580,7 @@ class RiskClassifier:
                 "file_patterns": file_score,
                 "sensitive_zones": zone_score,
                 "change_size": size_score,
+                "deterministic_floor": deterministic_score,
             },
             "rationale": self._generate_rationale(risk_tier, risk_drivers, findings),
         }
