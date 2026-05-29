@@ -29,6 +29,13 @@ from entrypoint import _map_findings, fetch_pr_diff, main, set_output
 from src.decision_engine import DecisionEngine
 
 
+class TestActionSupplyChainRegressions(unittest.TestCase):
+    def test_action_uses_checked_out_dockerfile_not_mutable_main_image(self):
+        action_yml = (ROOT / "action.yml").read_text(encoding="utf-8")
+        self.assertIn("image: 'Dockerfile'", action_yml)
+        self.assertNotIn("ghcr.io/dnyoussef/codeguard-action:main", action_yml)
+
+
 class TestRubricSchemaCompatibility(unittest.TestCase):
     def test_builtin_security_rubric_with_patterns_is_compiled(self):
         rubric_path = ROOT / "rubrics" / "builtin" / "security.yaml"

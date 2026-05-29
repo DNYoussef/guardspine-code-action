@@ -454,7 +454,10 @@ class PIIShieldClient:
             json=payload,
             headers=headers,
             timeout=self.timeout_seconds,
+            allow_redirects=False,
         )
+        if 300 <= response.status_code < 400:
+            raise ValueError("PII-Shield endpoint redirects are not allowed")
         response.raise_for_status()
         body = response.json()
 

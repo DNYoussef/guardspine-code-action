@@ -171,6 +171,24 @@ class TestPIIShieldRemoteBehavior(unittest.TestCase):
             client.sanitize_diff("+email='alice@example.com'\n")
 
     @patch("pii_shield.requests.post")
+    def test_remote_redirects_are_rejected(self, mock_post):
+        mock_response = Mock()
+        mock_response.status_code = 302
+        mock_response.raise_for_status.return_value = None
+        mock_post.return_value = mock_response
+
+        client = PIIShieldClient(
+            enabled=True,
+            mode="remote",
+            endpoint="https://shield.example/api/sanitize",
+            fail_closed=True,
+        )
+
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff("+email='alice@example.com'\n")
+        self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+
+    @patch("pii_shield.requests.post")
     def test_auto_mode_fail_open_passthrough_on_remote_error(self, mock_post):
         mock_post.side_effect = requests.exceptions.ConnectionError("offline")
         client = PIIShieldClient(
@@ -286,7 +304,7 @@ class TestHashFieldPreservation(unittest.TestCase):
         }
 
         # Simulate remote endpoint redacting high-entropy + PII strings
-        def fake_post(url, json=None, headers=None, timeout=None):
+        def fake_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             text = json["text"]
             # Redact anything that looks like a hash or PII
             import re
@@ -341,7 +359,7 @@ class TestHashFieldPreservation(unittest.TestCase):
 
         captured_payload = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured_payload["text"] = json["text"]
             resp = Mock()
             resp.status_code = 200
@@ -378,7 +396,7 @@ class TestSafeRegexList(unittest.TestCase):
         """safe_regex_list JSON is included in remote request payload."""
         captured = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured["payload"] = json
             resp = Mock()
             resp.status_code = 200
@@ -411,7 +429,7 @@ class TestSafeRegexList(unittest.TestCase):
         """Default safe_regex_list (hash field whitelist) is sent when not explicitly configured."""
         captured = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured["payload"] = json
             resp = Mock()
             resp.status_code = 200
@@ -442,7 +460,7 @@ class TestSafeRegexList(unittest.TestCase):
         """Invalid JSON in safe_regex_list is silently ignored."""
         captured = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured["payload"] = json
             resp = Mock()
             resp.status_code = 200
@@ -486,7 +504,7 @@ class TestDefaultSafeRegexList(unittest.TestCase):
         """When no safe_regex_list is provided, the default whitelist is sent."""
         captured = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured["payload"] = json
             resp = Mock()
             resp.status_code = 200
@@ -518,7 +536,7 @@ class TestDefaultSafeRegexList(unittest.TestCase):
         """When user provides safe_regex_list, it replaces the default."""
         captured = {}
 
-        def capture_post(url, json=None, headers=None, timeout=None):
+        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
             captured["payload"] = json
             resp = Mock()
             resp.status_code = 200

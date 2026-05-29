@@ -70,6 +70,18 @@ class TestWasmConfiguration(unittest.TestCase):
         self.assertIn("allowed@example.com", redacted_safe)
         self.assertNotIn("[HIDDEN", redacted_safe)
 
+    def test_wasi_env_does_not_inherit_ci_secrets(self):
+        os.environ["GITHUB_TOKEN"] = "ghp_secret"
+        os.environ["OPENAI_API_KEY"] = "sk-secret"
+        os.environ["PII_SAFE_REGEX_LIST"] = "[]"
+
+        client = PIIWasmClient()
+        wasi_env = dict(client._wasi_env())
+
+        self.assertEqual(wasi_env["PII_SAFE_REGEX_LIST"], "[]")
+        self.assertNotIn("GITHUB_TOKEN", wasi_env)
+        self.assertNotIn("OPENAI_API_KEY", wasi_env)
+
 @unittest.skipIf(sys.platform == "darwin", "WASM runtime unstable on macOS (SIGKILL)")
 class TestWasmStress(unittest.TestCase):
     def test_binary_data_resilience(self):
