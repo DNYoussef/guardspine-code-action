@@ -159,13 +159,18 @@ def _is_whitelisted(token: str, line: str) -> bool:
     """True when *token* on *line* is a known-safe high-entropy value."""
     if _HASH_FIELD.search(line) or _LOCK_INTEGRITY.search(line):
         return True
-    # A UUID is safe ONLY in an identifier context; in a secret context
-    # (api_key/password/...) it must not be suppressed.
-    if (_UUID.fullmatch(token) or _UUID.search(line)) and _SAFE_UUID_CONTEXT.search(line):
+    # The safe-context word must come from the assignment KEY (the text BEFORE
+    # the value), never from a trailing comment or the value itself. Otherwise
+    # `api_key: "<64hex>"  # commit id` would smuggle the whitelist -- the same
+    # context-blindness, just hidden in a comment. Slice the line at the token's
+    # position so only the key/prefix is searched for context.
+    idx = line.find(token)
+    prefix = line[:idx] if idx >= 0 else line
+    # A bare 64-hex value is safe ONLY in a hash/commit/checksum KEY context.
+    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(prefix):
         return True
-    # A bare 64-hex value is safe ONLY in a hash/commit/checksum context.
-    # In a secret context (api_key/password/...) it must NOT be suppressed.
-    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(line):
+    # A UUID is safe ONLY in an identifier KEY context (request_id, uuid, ...).
+    if (_UUID.fullmatch(token) or _UUID.search(token)) and _SAFE_UUID_CONTEXT.search(prefix):
         return True
     if _is_placeholder(token):
         return True

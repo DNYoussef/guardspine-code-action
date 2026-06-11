@@ -198,6 +198,30 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
                 f"UUID in a secret context must produce a finding: {line[:18]}",
             )
 
+    def test_safe_context_in_trailing_comment_does_NOT_whitelist(self):
+        # Comment-smuggling: a safe-context word AFTER the value (in a comment)
+        # must not whitelist a secret-context value. Context comes from the KEY.
+        h = "abcdef0123456789" * 4
+        u = "12345678-1234-1234-1234-123456789abc"
+        for line in ('api_key: "' + h + '"  # commit id',
+                     'api_key: "' + u + '"  # request_id from old system',
+                     "password = '" + h + "'  # sha256 of nothing"):
+            hits = detect([(1, line)])
+            self.assertTrue(
+                hits,
+                f"a safe word in a trailing comment must not whitelist: {line[:18]}",
+            )
+
+    def test_safe_context_in_key_still_whitelists_with_trailing_comment(self):
+        # The legit direction: a real key-context value stays whitelisted even
+        # when a comment follows.
+        h = "abcdef0123456789" * 4
+        u = "12345678-1234-1234-1234-123456789abc"
+        for line in ('commit = "' + h + '"  # bump version',
+                     'request_id = "' + u + '"  # incoming trace'):
+            self.assertEqual(detect([(1, line)]), [],
+                             f"key-context value must stay whitelisted: {line[:18]}")
+
     def test_structural_format_is_not_suppressed_by_whitelist(self):
         # A PEM is always a secret even on an otherwise innocuous line.
         line = "example_key = " + make_pem_header()

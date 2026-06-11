@@ -87,6 +87,10 @@ _VULNERABLE = {
     # Same class as the hex hole, for UUIDs: a UUID credential value in a
     # .yaml must condition (flag), not be a full miss.
     "uuid_api_key_in_yaml": ("config/svc.yaml", ['  api_key: "' + uuid() + '"']),
+    # Comment-smuggling: a safe-context word in a TRAILING COMMENT must not
+    # whitelist a secret-context value. Both must still condition.
+    "hex_api_key_comment_smuggle": ("config/a.yaml", ['  api_key: "' + sha256() + '"  # commit id']),
+    "uuid_api_key_comment_smuggle": ("config/b.yaml", ['  api_key: "' + uuid() + '"  # request_id from old system']),
 }
 
 # CLEAN: known-safe high-entropy values placed to produce ZERO findings.
