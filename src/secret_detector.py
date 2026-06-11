@@ -157,20 +157,27 @@ def _is_placeholder(token: str) -> bool:
     return False
 
 
-_STMT_SEP = re.compile(r"[;\n,{(\[]")
+# The assignment key that immediately governs the value at the END of *prefix*:
+# an identifier, an assign operator (`=` or `:`), and the opening quote. This
+# EXTRACTS the current key directly, so it is agnostic to how assignments are
+# separated -- semicolons, commas, or bare whitespace (shell/env style:
+# `COMMIT="x" API_KEY="x"`). Enumerating separators missed the whitespace case.
+_KEY_BEFORE_VALUE = re.compile(r"([A-Za-z_][\w.\-]*)\s*[:=]\s*['\"]?\s*$")
 
 
 def _immediate_key(prefix: str) -> str:
     """The assignment key governing the value that follows *prefix*.
 
-    *prefix* is the text on the line BEFORE the current value (the caller
-    passes the exact regex-match offset, never line.find, so a repeated value
-    or an earlier assignment on the same line cannot leak context). We then
-    keep only the segment after the last statement separator, so in
-    `commit = "x"; api_key = "x"` the api_key value sees `api_key = "`, not the
-    whole line. All whitelist context decisions use ONLY this key.
+    *prefix* is the text on the line BEFORE the current value (the caller passes
+    the exact regex-match offset, never line.find). We extract ONLY the
+    identifier on the left of the assignment operator that introduces this
+    value, so in `commit = "x"; api_key = "x"` -- and equally in
+    `COMMIT="x" API_KEY="x"` -- the api_key value's key is `api_key`, not
+    `commit`. Returns "" when no clear key precedes the value (then nothing is
+    whitelisted, erring toward flagging). All whitelist context uses ONLY this.
     """
-    return _STMT_SEP.split(prefix)[-1]
+    m = _KEY_BEFORE_VALUE.search(prefix)
+    return m.group(1) if m else ""
 
 
 def _is_whitelisted(token: str, key_prefix: str) -> bool:

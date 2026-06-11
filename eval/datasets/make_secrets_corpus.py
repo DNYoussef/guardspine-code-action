@@ -95,6 +95,9 @@ _VULNERABLE = {
     # on the same line must not whitelist the secret value.
     "hex_multi_assign_smuggle": ("src/cfg.py", ['commit = "' + sha256() + '"; api_key = "' + sha256() + '"']),
     "uuid_multi_assign_smuggle": ("src/cfg2.py", ['request_id = "' + uuid() + '"; api_key = "' + uuid() + '"']),
+    # Env / whitespace-separated multi-assignment (no `;`): same bypass class.
+    "hex_env_assign_smuggle": ("deploy/env.sh", ['COMMIT="' + sha256() + '" API_KEY="' + sha256() + '"']),
+    "uuid_env_assign_smuggle": ("deploy/env2.sh", ['REQUEST_ID="' + uuid() + '" API_KEY="' + uuid() + '"']),
 }
 
 # CLEAN: known-safe high-entropy values placed to produce ZERO findings.

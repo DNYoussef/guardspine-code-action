@@ -233,7 +233,10 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
         for line in (f'commit = "{h}"; api_key = "{h}"',           # same hex reused
                      f'request_id = "{u}"; api_key = "{u}"',        # same uuid reused
                      f'content_hash = "{h}"; api_key = "{h2}"',     # different hex
-                     f'integrity: "{sri}"; api_key = "{h}"'):       # global integrity
+                     f'integrity: "{sri}"; api_key = "{h}"',        # global integrity
+                     f'COMMIT="{h}" API_KEY="{h}"',                 # env / whitespace sep
+                     f'REQUEST_ID="{u}" API_KEY="{u}"',             # env uuid
+                     f'INTEGRITY="{sri}" API_KEY="{h}"'):           # env integrity
             hits = detect([(1, line)])
             self.assertTrue(
                 hits,
@@ -244,7 +247,8 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
         h = "abcdef0123456789" * 4
         u = "12345678-1234-1234-1234-123456789abc"
         for line in (f'commit = "{h}"', f'request_id = "{u}"',
-                     f'content_hash = "{h}"', f'object_id = "{h}"'):
+                     f'content_hash = "{h}"', f'object_id = "{h}"',
+                     f'COMMIT="{h}"', f'REQUEST_ID="{u}"'):  # env-style legit
             self.assertEqual(detect([(1, line)]), [],
                              f"legit key-context value must whitelist: {line[:18]}")
 
