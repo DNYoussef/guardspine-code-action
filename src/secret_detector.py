@@ -97,10 +97,8 @@ _QUOTED_TOKEN = re.compile(r"['\"]([A-Za-z0-9/+_=\-]{16,})['\"]")
 # --------------------------------------------------------------------------
 # Whitelist: known-safe high-entropy values that must NEVER be flagged.
 # --------------------------------------------------------------------------
-_HASH_FIELD = re.compile(
-    r"\b\w*_hash\b.{0,20}['\"]?(?:sha256:)?[0-9a-fA-F]{64}['\"]?"
-)
-_LOCK_INTEGRITY = re.compile(r"(?i)integrity['\"]?\s*[:=]\s*['\"]?sha\d{3}-")
+# Subresource-integrity / lockfile digest VALUE shape (sha256-/384-/512- + b64).
+_SRI_VALUE = re.compile(r"^sha(?:256|384|512)-")
 _UUID = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
@@ -111,18 +109,22 @@ _BARE_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")  # sha256 / git blob shape
 # suppresses topic zones) became a full miss. So the hex whitelist now requires
 # one of these context words on the line; otherwise the value is treated as a
 # candidate (at least a condition).
+# Boundaries treat `_` and `-` as separators (so `content_hash` matches `hash`,
+# but `shard` does not match `sha`). \b alone fails here because `_` is a word
+# char, which is exactly how the old global _HASH_FIELD masked this.
 _SAFE_HEX_CONTEXT = re.compile(
-    r"(?i)\b(?:hash|commit|checksum|sha\d*|digest|integrity|etag|revision|"
-    r"oid|blob|sri|fingerprint|content[_-]?id|object[_-]?id)\b"
+    r"(?i)(?<![A-Za-z0-9])(?:hash|commit|checksum|sha\d*|digest|integrity|"
+    r"etag|revision|oid|blob|sri|fingerprint|content[_-]?id|object[_-]?id)"
+    r"(?![A-Za-z0-9])"
 )
 # A UUID is safe ONLY as an identifier (request_id, trace_id, uuid, ...). Same
 # hole as the hex whitelist: a blanket UUID suppression ate the detector
 # signal for `api_key: "<uuid>"` in a .yaml (P2 topic scoping off). A UUID in a
 # secret context is no longer suppressed and at least conditions.
 _SAFE_UUID_CONTEXT = re.compile(
-    r"(?i)\b(?:uuid|guid|request[_-]?id|trace[_-]?id|correlation[_-]?id|"
-    r"span[_-]?id|session[_-]?id|transaction[_-]?id|message[_-]?id|"
-    r"event[_-]?id|run[_-]?id|job[_-]?id)\b"
+    r"(?i)(?<![A-Za-z0-9])(?:uuid|guid|request[_-]?id|trace[_-]?id|"
+    r"correlation[_-]?id|span[_-]?id|session[_-]?id|transaction[_-]?id|"
+    r"message[_-]?id|event[_-]?id|run[_-]?id|job[_-]?id)(?![A-Za-z0-9])"
 )
 _PLACEHOLDER = re.compile(
     r"(?i)(?:x{4,}|<[^>]+>|your[_-]|example|changeme|dummy|placeholder|"
@@ -155,24 +157,40 @@ def _is_placeholder(token: str) -> bool:
     return False
 
 
-def _is_whitelisted(token: str, line: str) -> bool:
-    """True when *token* on *line* is a known-safe high-entropy value."""
-    if _HASH_FIELD.search(line) or _LOCK_INTEGRITY.search(line):
-        return True
-    # The safe-context word must come from the assignment KEY (the text BEFORE
-    # the value), never from a trailing comment or the value itself. Otherwise
-    # `api_key: "<64hex>"  # commit id` would smuggle the whitelist -- the same
-    # context-blindness, just hidden in a comment. Slice the line at the token's
-    # position so only the key/prefix is searched for context.
-    idx = line.find(token)
-    prefix = line[:idx] if idx >= 0 else line
-    # A bare 64-hex value is safe ONLY in a hash/commit/checksum KEY context.
-    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(prefix):
-        return True
-    # A UUID is safe ONLY in an identifier KEY context (request_id, uuid, ...).
-    if (_UUID.fullmatch(token) or _UUID.search(token)) and _SAFE_UUID_CONTEXT.search(prefix):
-        return True
+_STMT_SEP = re.compile(r"[;\n,{(\[]")
+
+
+def _immediate_key(prefix: str) -> str:
+    """The assignment key governing the value that follows *prefix*.
+
+    *prefix* is the text on the line BEFORE the current value (the caller
+    passes the exact regex-match offset, never line.find, so a repeated value
+    or an earlier assignment on the same line cannot leak context). We then
+    keep only the segment after the last statement separator, so in
+    `commit = "x"; api_key = "x"` the api_key value sees `api_key = "`, not the
+    whole line. All whitelist context decisions use ONLY this key.
+    """
+    return _STMT_SEP.split(prefix)[-1]
+
+
+def _is_whitelisted(token: str, key_prefix: str) -> bool:
+    """True when *token* is a known-safe value given ONLY its assignment key.
+
+    Context is taken solely from *key_prefix* (the immediate assignment key),
+    never from the whole line -- so comment-smuggling and multi-assignment
+    smuggling (a safe-context word elsewhere on the line) cannot suppress a
+    secret-context value.
+    """
     if _is_placeholder(token):
+        return True
+    # Bare 64-hex (sha256 / commit / blob) in a digest/identifier KEY context.
+    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(key_prefix):
+        return True
+    # Lockfile / SRI integrity digest value in an integrity/digest KEY context.
+    if _SRI_VALUE.match(token) and _SAFE_HEX_CONTEXT.search(key_prefix):
+        return True
+    # A UUID in an identifier KEY context (request_id, uuid, ...).
+    if (_UUID.fullmatch(token) or _UUID.search(token)) and _SAFE_UUID_CONTEXT.search(key_prefix):
         return True
     return False
 
@@ -208,7 +226,7 @@ def scan_line(text: str) -> list[_Candidate]:
 
     for m in _GENERIC_ASSIGN.finditer(text):
         val = m.group(1)
-        if _is_whitelisted(val, text) or _is_placeholder(val):
+        if _is_whitelisted(val, _immediate_key(text[:m.start(1)])):
             continue
         if len(val) >= _GENERIC_MIN_LEN and shannon_entropy(val) >= _GENERIC_MIN_BITS:
             # CONDITION only (provable=False): a name=value assignment is
@@ -221,7 +239,7 @@ def scan_line(text: str) -> list[_Candidate]:
 
     for m in _QUOTED_TOKEN.finditer(text):
         tok = m.group(1)
-        if _is_whitelisted(tok, text):
+        if _is_whitelisted(tok, _immediate_key(text[:m.start(1)])):
             continue
         if len(tok) >= _ENTROPY_MIN_LEN and shannon_entropy(tok) >= _ENTROPY_MIN_BITS:
             # Entropy alone is a CONDITION, never a block (provable=False);

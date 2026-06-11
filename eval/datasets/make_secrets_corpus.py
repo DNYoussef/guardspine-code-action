@@ -91,6 +91,10 @@ _VULNERABLE = {
     # whitelist a secret-context value. Both must still condition.
     "hex_api_key_comment_smuggle": ("config/a.yaml", ['  api_key: "' + sha256() + '"  # commit id']),
     "uuid_api_key_comment_smuggle": ("config/b.yaml", ['  api_key: "' + uuid() + '"  # request_id from old system']),
+    # Multi-assignment smuggling: a safe-context word in a DIFFERENT assignment
+    # on the same line must not whitelist the secret value.
+    "hex_multi_assign_smuggle": ("src/cfg.py", ['commit = "' + sha256() + '"; api_key = "' + sha256() + '"']),
+    "uuid_multi_assign_smuggle": ("src/cfg2.py", ['request_id = "' + uuid() + '"; api_key = "' + uuid() + '"']),
 }
 
 # CLEAN: known-safe high-entropy values placed to produce ZERO findings.

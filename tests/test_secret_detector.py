@@ -222,6 +222,32 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
             self.assertEqual(detect([(1, line)]), [],
                              f"key-context value must stay whitelisted: {line[:18]}")
 
+    def test_multi_assignment_smuggle_does_NOT_whitelist(self):
+        # A safe-context word in a DIFFERENT assignment on the same line must
+        # not whitelist a secret-context value. Context is taken from the
+        # current assignment's key only (exact match offset, not line.find).
+        h = "abcdef0123456789" * 4
+        h2 = "0123456789abcdef" * 4
+        u = "12345678-1234-1234-1234-123456789abc"
+        sri = "sha512-" + ("Ab3Xy9Zk" * 6)[:40]
+        for line in (f'commit = "{h}"; api_key = "{h}"',           # same hex reused
+                     f'request_id = "{u}"; api_key = "{u}"',        # same uuid reused
+                     f'content_hash = "{h}"; api_key = "{h2}"',     # different hex
+                     f'integrity: "{sri}"; api_key = "{h}"'):       # global integrity
+            hits = detect([(1, line)])
+            self.assertTrue(
+                hits,
+                f"a safe word in another assignment must not whitelist: {line[:24]}",
+            )
+
+    def test_multi_assignment_legit_values_still_whitelist(self):
+        h = "abcdef0123456789" * 4
+        u = "12345678-1234-1234-1234-123456789abc"
+        for line in (f'commit = "{h}"', f'request_id = "{u}"',
+                     f'content_hash = "{h}"', f'object_id = "{h}"'):
+            self.assertEqual(detect([(1, line)]), [],
+                             f"legit key-context value must whitelist: {line[:18]}")
+
     def test_structural_format_is_not_suppressed_by_whitelist(self):
         # A PEM is always a secret even on an otherwise innocuous line.
         line = "example_key = " + make_pem_header()
