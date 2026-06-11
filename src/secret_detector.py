@@ -105,7 +105,16 @@ _UUID = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
-_BARE_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")  # sha256 / git blob, not a secret alone
+_BARE_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")  # sha256 / git blob shape
+# A 64-hex token is safe ONLY in a hash/commit/checksum context. Whitelisting
+# every 64-hex blob was a hole: `api_key: '<64 hex>'` in a .yaml (where P2
+# suppresses topic zones) became a full miss. So the hex whitelist now requires
+# one of these context words on the line; otherwise the value is treated as a
+# candidate (at least a condition).
+_SAFE_HEX_CONTEXT = re.compile(
+    r"(?i)\b(?:hash|commit|checksum|sha\d*|digest|integrity|etag|revision|"
+    r"oid|blob|sri|fingerprint|content[_-]?id|object[_-]?id)\b"
+)
 _PLACEHOLDER = re.compile(
     r"(?i)(?:x{4,}|<[^>]+>|your[_-]|example|changeme|dummy|placeholder|"
     r"redacted|sample|test[_-]?key|fake|\bnull\b|\bnone\b|0{8,})"
@@ -143,7 +152,9 @@ def _is_whitelisted(token: str, line: str) -> bool:
         return True
     if _UUID.fullmatch(token) or _UUID.search(line):
         return True
-    if _BARE_HEX64.match(token):
+    # A bare 64-hex value is safe ONLY in a hash/commit/checksum context.
+    # In a secret context (api_key/password/...) it must NOT be suppressed.
+    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(line):
         return True
     if _is_placeholder(token):
         return True

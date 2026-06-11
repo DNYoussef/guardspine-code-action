@@ -595,20 +595,33 @@ class TestSecretDetectorWiring(unittest.TestCase):
 
     def test_pem_in_test_fixture_conditions_not_blocks(self):
         # Amendment 3: a secret in a test/fixture file conditions, never blocks.
-        _, _, packet = self._decide("tests/fixtures/sample_key.py", [self._pem()])
-        self.assertNotEqual(packet.decision, "block")
+        _, risk, packet = self._decide("tests/fixtures/sample_key.py", [self._pem()])
+        self.assertEqual(packet.decision, "merge-with-conditions")
         self.assertEqual(len(packet.hard_blocks), 0)
+        secret = next((f for f in risk["findings"]
+                       if str(f.get("rule_id", "")).startswith("secret-")), None)
+        self.assertIsNotNone(secret, "expected a secret finding for the fixture PEM")
+        self.assertFalse(secret["provable"],
+                         "a test-fixture secret must be non-provable (amendment 3)")
+        self.assertEqual(secret["severity"], "high")
 
     def test_sha256_hash_field_does_not_block(self):
         line = "content_hash = '" + ("abcdef0123456789" * 4) + "'"
         _, _, packet = self._decide("src/bundle.py", [line])
-        self.assertNotEqual(packet.decision, "block")
+        self.assertEqual(packet.decision, "merge")
 
     def test_generic_password_assignment_conditions_not_blocks(self):
         # David's correction: generic assignment is NOT provable -> condition.
         line = "password = 'Ab3Xy9Zk7Qw2Mn5Pr8Lt'"
-        _, _, packet = self._decide("src/login.py", [line])
-        self.assertNotEqual(packet.decision, "block")
+        _, risk, packet = self._decide("src/login.py", [line])
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(len(packet.hard_blocks), 0)
+        cred = next((f for f in risk["findings"]
+                     if f.get("rule_id") == "secret-hardcoded_credential"), None)
+        self.assertIsNotNone(cred, "expected a hardcoded_credential finding")
+        self.assertFalse(cred["provable"],
+                         "generic assignment must not earn block authority")
+        self.assertEqual(cred["severity"], "high")
 
     def test_yaml_comment_prose_still_does_not_block(self):
         # P1+P2 regression: comment keywords still merge, even with the secret

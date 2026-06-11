@@ -80,6 +80,10 @@ _VULNERABLE = {
     "slack_token_in_source": ("src/notify.py", ["hook = '" + slack_token() + "'"]),
     "google_key_in_source": ("src/maps.py", ["api = '" + google_key() + "'"]),
     "aws_secret_in_source": ("src/aws.py", [aws_secret_line()]),
+    # Regression for the 64-hex-in-secret-context hole: a 64-hex api_key in a
+    # .yaml (where P2 suppresses topic zones) must NOT be a full miss. It is a
+    # generic credential -> conditions (flagged), not block.
+    "hex_api_key_in_yaml": ("config/app.yaml", ['  api_key: "' + sha256() + '"']),
 }
 
 # CLEAN: known-safe high-entropy values placed to produce ZERO findings.

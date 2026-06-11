@@ -158,6 +158,26 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
             self.assertEqual(detect([(1, line)]), [],
                              f"placeholder must not flag: {val}")
 
+    def test_hex64_in_hash_context_still_whitelisted(self):
+        # A 64-hex in a hash/commit context is a content id, not a secret.
+        for line in ("content_hash = '" + ("abcdef0123456789" * 4) + "'",
+                     "commit = '" + ("0123456789abcdef" * 4) + "'",
+                     "checksum: '" + ("fedcba9876543210" * 4) + "'"):
+            self.assertEqual(detect([(1, line)]), [],
+                             f"safe-context hex must stay whitelisted: {line[:20]}")
+
+    def test_hex64_in_secret_context_is_NOT_whitelisted(self):
+        # The hole: api_key/password = <64 hex> must NOT be globally suppressed
+        # just because it is 64 hex. It must at least condition.
+        hexval = "abcdef0123456789" * 4
+        for line in ("api_key = '" + hexval + "'",
+                     "password: '" + hexval + "'"):
+            hits = detect([(1, line)])
+            self.assertTrue(
+                hits,
+                f"64-hex in a secret context must produce a finding: {line[:20]}",
+            )
+
     def test_structural_format_is_not_suppressed_by_whitelist(self):
         # A PEM is always a secret even on an otherwise innocuous line.
         line = "example_key = " + make_pem_header()
