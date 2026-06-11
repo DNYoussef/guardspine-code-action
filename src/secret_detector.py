@@ -184,7 +184,12 @@ def scan_line(text: str) -> list[_Candidate]:
         if _is_whitelisted(val, text) or _is_placeholder(val):
             continue
         if len(val) >= _GENERIC_MIN_LEN and shannon_entropy(val) >= _GENERIC_MIN_BITS:
-            out.append(_Candidate("hardcoded_credential", "critical", True,
+            # CONDITION only (provable=False): a name=value assignment is
+            # strong but NOT a known credential format, so it must not earn
+            # block authority by assertion. Promotion to provable is gated on
+            # the P3c secrets negative corpus (David's correction). Structural
+            # provider formats above remain provable.
+            out.append(_Candidate("hardcoded_credential", "high", False,
                                   "hardcoded credential assignment"))
 
     for m in _QUOTED_TOKEN.finditer(text):

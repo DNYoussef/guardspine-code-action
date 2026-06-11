@@ -166,10 +166,14 @@ class TestWhitelistSuppressesFalsePositives(unittest.TestCase):
 
 
 class TestGenericAssignment(unittest.TestCase):
-    def test_high_entropy_password_assignment_is_provable(self):
+    def test_high_entropy_password_assignment_is_condition_not_provable(self):
+        # David's correction: a generic name=value assignment is NOT a known
+        # credential format, so it conditions (high) but never earns block
+        # authority by assertion. Only structural provider formats are provable.
         hits = detect([(1, "password = '" + _varied(20) + "'")])
-        self.assertTrue(any(h.kind == "hardcoded_credential" and h.provable
-                            for h in hits))
+        cred = next((h for h in hits if h.kind == "hardcoded_credential"), None)
+        self.assertIsNotNone(cred, "expected a hardcoded_credential condition")
+        self.assertEqual((cred.severity, cred.provable), ("high", False))
 
     def test_short_or_low_entropy_assignment_not_provable_credential(self):
         # "aaaaaaaa" is low-entropy / placeholder -> no hardcoded_credential.

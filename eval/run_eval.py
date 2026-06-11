@@ -94,6 +94,10 @@ DATASETS = {
     "castle": "castle",
     "real-cve": "real-cve",
     "real-cve-intro": "real-cve-intro",
+    # P3c: deterministic secret detector corpus. Runs at --tier L0 (rules
+    # only, no API key). vulnerable/ = real credential formats that MUST flag
+    # (they block); clean/ = known-safe high-entropy values that must NOT.
+    "secrets": "secrets",
 }
 
 
