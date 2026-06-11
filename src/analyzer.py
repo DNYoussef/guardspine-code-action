@@ -13,6 +13,7 @@ import re
 import json
 import hashlib
 import concurrent.futures
+from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field, fields as dataclass_fields
 from unidiff import PatchSet
@@ -173,6 +174,71 @@ class DiffAnalyzer:
         r"(?:\.md|\.txt|\.rst)$|(?:^|/)(?:README|LICENSE|CHANGELOG|CONTRIBUTING)",
         re.IGNORECASE,
     )
+
+    # TOPIC zones are descriptive keyword matches ("this touches auth/crypto").
+    # They are blast-radius/sensitivity signals, never provable danger, so the
+    # source-file and comment scoping below applies ONLY to them. The remaining
+    # SENSITIVE_PATTERNS (command_injection, deserialization, template_injection,
+    # path_traversal, weak_crypto, xss) are code-shaped DANGER detectors and are
+    # deliberately NOT scoped: they keep scanning every added line in every file
+    # type, so a future deterministic secret/injection detector wired in here is
+    # never foreclosed from flagging a config file (.yml/.json/.toml/.env).
+    TOPIC_ZONES = frozenset({
+        "auth", "payment", "crypto", "database", "security", "pii", "config", "infra",
+    })
+
+    # Non-source / config files: a topic keyword here is descriptive data, not
+    # executable code, so topic zones are suppressed (same rationale as
+    # _DOC_FILE_RE). DANGER detectors still run on these files. ".env" with no
+    # extension is matched by the leading-dot alternative.
+    _NON_SOURCE_RE = re.compile(
+        r"(?:^|/)\.env(?:\.[^/]*)?$|\.(?:ya?ml|json|toml|ini|cfg|conf|lock|env|properties)$",
+        re.IGNORECASE,
+    )
+
+    # Line-comment markers per file extension, used to strip comment text before
+    # TOPIC-zone matching on SOURCE files (so a keyword in a code comment does
+    # not inflate the tier). Extensions absent here get no stripping (config
+    # files are handled by _NON_SOURCE_RE, not by comment markers).
+    _LINE_COMMENT_MARKERS = {
+        **{ext: ("#",) for ext in (
+            ".py", ".sh", ".bash", ".rb", ".pl", ".r", ".ps1", ".tf", ".coffee",
+        )},
+        **{ext: ("//",) for ext in (
+            ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs", ".java", ".c", ".cc",
+            ".cpp", ".cxx", ".h", ".hpp", ".cs", ".go", ".rs", ".kt", ".kts",
+            ".swift", ".scala", ".php", ".dart",
+        )},
+        **{ext: ("--",) for ext in (".sql", ".lua", ".hs")},
+    }
+
+    @classmethod
+    def _topic_code_text(cls, path: str, line_value: str) -> str | None:
+        """Return the code portion of *line_value* to match TOPIC zones against,
+        or None when topic matching must be skipped for this file/line.
+
+        Returns None for non-source/config files (topic keywords there are
+        descriptive, not code). Otherwise strips the comment portion: a
+        full-line comment yields "" (no topic match), and an inline trailing
+        comment is removed. DANGER detectors do not use this -- they always
+        scan the raw line.
+        """
+        if cls._NON_SOURCE_RE.search(path):
+            return None
+        markers = cls._LINE_COMMENT_MARKERS.get(Path(path).suffix.lower())
+        if not markers:
+            return line_value
+        stripped_left = line_value.lstrip()
+        for marker in markers:
+            if stripped_left.startswith(marker):
+                return ""  # whole line is a comment
+        out = line_value
+        for marker in markers:
+            # Inline comment: a marker preceded by whitespace. Requiring the
+            # leading whitespace avoids cutting "http://" or a bare "#" inside
+            # an unspaced token.
+            out = re.sub(r"\s" + re.escape(marker) + r".*$", "", out)
+        return out
 
     # File patterns for preliminary risk tier estimation
     FILE_PATTERNS = {
@@ -428,10 +494,22 @@ class DiffAnalyzer:
                         # If so, suppress the "crypto" zone (R2: no special cases).
                         is_hash_field = bool(self._HASH_FIELD_RE.search(line.value))
 
+                        # TOPIC zones match only the code portion of a SOURCE
+                        # line; None means topic matching is off for this
+                        # file/line (config file, or a full-line comment).
+                        # DANGER detectors always scan the raw line.
+                        topic_text = self._topic_code_text(patched_file.path, line.value)
+
                         for zone_name, pattern in self.SENSITIVE_PATTERNS.items():
                             if is_hash_field and zone_name == "crypto":
                                 continue
-                            if re.search(pattern, line.value, re.IGNORECASE):
+                            if zone_name in self.TOPIC_ZONES:
+                                if not topic_text:
+                                    continue
+                                haystack = topic_text
+                            else:
+                                haystack = line.value
+                            if re.search(pattern, haystack, re.IGNORECASE):
                                 # When a sanitized diff is available, redact
                                 # the preview to avoid leaking raw PII.
                                 preview = (

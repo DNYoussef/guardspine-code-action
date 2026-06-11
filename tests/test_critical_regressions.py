@@ -389,5 +389,166 @@ class TestRiskPolicyValidationRegression(unittest.TestCase):
             policy_path.unlink(missing_ok=True)
 
 
+class TestProvableInvariantAndTopicScoping(unittest.TestCase):
+    """P1 (block only on provable) + P2 (topic-zone scoping) acceptance bar.
+
+    Origin: GuardSpine PR #111 hard-blocked on the words crypto/auth/secrets
+    in YAML COMMENT prose, because keyword zones were marked provable=True and
+    the detector scanned comments in non-source files.
+    """
+
+    # --- P1: provable is the only hard-block path -------------------------
+
+    def test_missing_provable_in_payload_defaults_nonprovable(self):
+        """Acceptance: missing provable from sensitive-*/rubric payloads
+        defaults non-provable. The old mapper inferred provable from rule_id."""
+        mapped = _map_findings([
+            {"severity": "critical", "message": "Sensitive crypto code modified",
+             "rule_id": "sensitive-crypto", "zone": "crypto"},   # no 'provable'
+            {"severity": "critical", "message": "Policy rule triggered",
+             "rule_id": "RUBRIC-CC7.1"},                          # no 'provable'
+        ])
+        self.assertTrue(
+            all(m.provable is False for m in mapped),
+            "Missing provable must default to non-provable; a rule_id alone "
+            "never grants hard-block authority",
+        )
+
+    def test_zone_and_rubric_findings_are_nonprovable(self):
+        """Mutation guard (default): keyword zone findings the classifier emits
+        must be non-provable. Flipping Finding.provable's default back to True
+        breaks this."""
+        analysis = {
+            "files": [{"path": "src/crypto_util.py", "hunks": []}],
+            "sensitive_zones": [
+                {"zone": "crypto", "file": "src/crypto_util.py", "line": 5},
+            ],
+            "lines_added": 1,
+            "lines_removed": 0,
+        }
+        risk = RiskClassifier().classify(analysis)
+        zone_findings = [
+            f for f in risk["findings"]
+            if str(f.get("rule_id", "")).startswith("sensitive-")
+        ]
+        self.assertTrue(zone_findings, "expected a sensitive-crypto zone finding")
+        self.assertTrue(
+            all(f["provable"] is False for f in zone_findings),
+            "Keyword zone findings must be non-provable",
+        )
+
+    def test_critical_keyword_finding_nonprovable_conditions_not_blocks(self):
+        """Acceptance: a critical keyword finding with provable=False
+        conditions/escalates but does not hard-block."""
+        packet = DecisionEngine("standard").decide(_map_findings([
+            {"severity": "critical", "message": "Sensitive crypto code modified",
+             "rule_id": "sensitive-crypto", "zone": "crypto", "provable": False},
+        ]))
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(len(packet.hard_blocks), 0)
+
+    def test_explicit_provable_critical_still_hard_blocks(self):
+        """Acceptance + mutation guard (block path): an explicit provable=True
+        critical finding MUST still hard-block. Bypassing the provable gate in
+        the mapper or engine breaks this."""
+        packet = DecisionEngine("standard").decide(_map_findings([
+            {"severity": "critical", "message": "Deterministic detection",
+             "rule_id": "real-detector", "provable": True},
+        ]))
+        self.assertEqual(packet.decision, "block")
+        self.assertEqual(len(packet.hard_blocks), 1)
+
+    def test_yaml_comment_keywords_do_not_block(self):
+        """Acceptance: the PR #111 class. A workflow YAML whose added lines are
+        comments mentioning sign/verify/secrets must not block."""
+        diff = (
+            "diff --git a/.github/workflows/pr-check.yml b/.github/workflows/pr-check.yml\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/.github/workflows/pr-check.yml\n"
+            "+++ b/.github/workflows/pr-check.yml\n"
+            "@@ -1,1 +1,4 @@\n"
+            " name: PR Check\n"
+            "+          # block fires only on provable findings (forgery / secrets /\n"
+            "+          # injection class). The gate must sign and verify the encrypt\n"
+            "+          # path; auth refactors carry no provable danger.\n"
+        )
+        analysis = DiffAnalyzer(ai_review=False).analyze(diff)
+        zones = [z.get("zone") for z in analysis.get("sensitive_zones", [])]
+        self.assertEqual(
+            zones, [], "YAML comment prose must not raise topic zones",
+        )
+        risk = RiskClassifier().classify(analysis)
+        packet = DecisionEngine("standard").decide(_map_findings(risk["findings"]))
+        self.assertNotEqual(packet.decision, "block")
+
+    # --- P2: topic-zone scoping (source files + comments) -----------------
+
+    def test_python_comment_keywords_do_not_raise_topic_zones(self):
+        """Acceptance: Python comments do not inflate topic zones."""
+        diff = (
+            "diff --git a/src/app.py b/src/app.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/app.py\n"
+            "+++ b/src/app.py\n"
+            "@@ -1,1 +1,3 @@\n"
+            " def f():\n"
+            "+    # this will encrypt the password and sign the auth token\n"
+            "+    return 1\n"
+        )
+        analysis = DiffAnalyzer(ai_review=False).analyze(diff)
+        zones = [z.get("zone") for z in analysis.get("sensitive_zones", [])]
+        self.assertEqual(
+            zones, [], "Python comment keywords must not raise topic zones",
+        )
+
+    def test_real_source_keyword_lines_still_signal(self):
+        """Acceptance + mutation guard (over-suppression): real source keyword
+        lines still produce tier/condition signals. Scoping that swallowed
+        these would break this."""
+        diff = (
+            "diff --git a/src/auth.py b/src/auth.py\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/src/auth.py\n"
+            "+++ b/src/auth.py\n"
+            "@@ -1,1 +1,3 @@\n"
+            " import os\n"
+            "+def login(password):\n"
+            "+    return encrypt(password)\n"
+        )
+        analysis = DiffAnalyzer(ai_review=False).analyze(diff)
+        zones = set(z.get("zone") for z in analysis.get("sensitive_zones", []))
+        self.assertTrue(
+            {"auth", "crypto"} & zones,
+            "Real source keyword lines must still raise topic zones",
+        )
+        risk = RiskClassifier().classify(analysis)
+        packet = DecisionEngine("standard").decide(_map_findings(risk["findings"]))
+        self.assertNotEqual(risk["risk_tier"], "L0")
+        self.assertIn(
+            packet.decision, ("merge-with-conditions", "block"),
+            "A real auth/crypto source change must still escalate",
+        )
+
+    def test_danger_detector_still_scans_config_files(self):
+        """Constraint: source-file scoping is TOPIC-only. A code-shaped DANGER
+        pattern must still fire in a config file, so a future deterministic
+        secret/injection detector is never foreclosed there."""
+        diff = (
+            "diff --git a/deploy.yaml b/deploy.yaml\n"
+            "index 1111111..2222222 100644\n"
+            "--- a/deploy.yaml\n"
+            "+++ b/deploy.yaml\n"
+            "@@ -1,1 +1,2 @@\n"
+            " steps:\n"
+            "+  run: python -c 'import os; os.system(payload)'\n"
+        )
+        analysis = DiffAnalyzer(ai_review=False).analyze(diff)
+        zones = set(z.get("zone") for z in analysis.get("sensitive_zones", []))
+        self.assertIn(
+            "command_injection", zones,
+            "DANGER detectors must keep scanning config files (topic-only scoping)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

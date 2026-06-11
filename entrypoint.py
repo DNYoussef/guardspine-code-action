@@ -758,8 +758,13 @@ def _map_findings(finding_dicts: list[dict]) -> list[AuditFinding]:
         elif isinstance(provable_value, str):
             provable = parse_bool(provable_value)
         else:
-            # Backward compatibility for older finding payloads.
-            provable = bool(fd.get("rule_id")) and fd.get("rule_id") != "ai-consensus"
+            # Missing `provable` means NOT provable. Hard-block authority is
+            # granted ONLY by an explicit provable=True from a deterministic
+            # detector -- never inferred from the mere presence of a rule_id.
+            # Every keyword zone (sensitive-*) and rubric rule carries a
+            # rule_id but is a heuristic, so the old `bool(rule_id)` fallback
+            # silently made them all provable and let comment prose hard-block.
+            provable = False
         mapped.append(AuditFinding(
             severity=fd.get("severity", "medium"),
             category=fd.get("zone", "general"),

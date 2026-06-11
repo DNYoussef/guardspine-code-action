@@ -26,7 +26,14 @@ class Finding:
     line: int | None
     rule_id: str
     zone: str | None = None
-    provable: bool = True
+    # `provable` defaults to FALSE: a finding earns hard-block authority only
+    # by being a deterministic detection (AST/dataflow/entropy). Everything
+    # produced here -- sensitive-zone keyword matches and rubric regex rules --
+    # is a heuristic and must NOT be provable, no matter its rule_id or
+    # severity. A genuine deterministic detector opts in with provable=True
+    # explicitly. This is the single invariant that makes decision==block mean
+    # "provable danger" rather than "a keyword appeared."
+    provable: bool = False
 
 
 class RiskClassifier:
