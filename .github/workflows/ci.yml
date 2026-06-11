@@ -47,6 +47,11 @@ jobs:
         run: |
           python eval/run_eval.py --tier L0 --dataset hand-crafted --max-fp 45 --max-fn 5
 
+      - name: Run secrets eval gate (P3 -- deterministic, strict FP/FN)
+        run: |
+          python eval/datasets/make_secrets_corpus.py
+          python eval/run_eval.py --tier L0 --dataset secrets --max-fp 5 --max-fn 5
+
   eval-online-optional:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

@@ -18,6 +18,11 @@ from typing import Any, Optional
 from dataclasses import dataclass, field, fields as dataclass_fields
 from unidiff import PatchSet
 
+try:  # works both as a package (src.analyzer) and top-level (analyzer)
+    from .secret_detector import detect as detect_secrets
+except ImportError:  # pragma: no cover - import-path shim for test layout
+    from secret_detector import detect as detect_secrets
+
 
 @dataclass
 class FileChange:
@@ -468,6 +473,14 @@ class DiffAnalyzer:
             # not executable code (R2: eliminate special cases).
             is_doc_file = bool(self._DOC_FILE_RE.search(patched_file.path))
 
+            # Raw added lines for the deterministic secret detector. Collected
+            # on the RAW value (pre-redaction) so detection sees the secret;
+            # the finding preview is always REDACTED. Secret detection runs on
+            # EVERY file type (incl. config and docs) -- a committed credential
+            # anywhere is a leak -- so it is NOT gated by is_doc_file/topic
+            # scoping.
+            secret_lines: list[tuple[int, str]] = []
+
             # Extract hunks
             for hunk in patched_file:
                 hunk_data = {
@@ -485,6 +498,9 @@ class DiffAnalyzer:
                         "line_number": line.target_line_no if line.is_added else line.source_line_no
                     }
                     hunk_data["lines"].append(line_data)
+
+                    if line.is_added:
+                        secret_lines.append((line_data["line_number"], line.value))
 
                     # Check for sensitive patterns on introduced lines only.
                     # Removed lines are remediation context and should not
@@ -525,6 +541,23 @@ class DiffAnalyzer:
                                 })
 
                 file_change.hunks.append(hunk_data)
+
+            # Deterministic secret detection over this file's raw added lines.
+            # These zones carry their own severity + provable flag (marked
+            # detector="secret" so risk_classifier keys provable on the local
+            # detector, never on the zone name). The preview is always
+            # REDACTED -- raw secret material never leaves the detector.
+            for hit in detect_secrets(secret_lines):
+                sensitive_zones.append({
+                    "zone": "entropy_secret",
+                    "file": patched_file.path,
+                    "line": hit.line,
+                    "content_preview": "[REDACTED]",
+                    "detector": "secret",
+                    "secret_kind": hit.kind,
+                    "severity": hit.severity,
+                    "provable": hit.provable,
+                })
 
             files.append({
                 "path": file_change.path,

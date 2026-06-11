@@ -94,6 +94,10 @@ DATASETS = {
     "castle": "castle",
     "real-cve": "real-cve",
     "real-cve-intro": "real-cve-intro",
+    # P3c: deterministic secret detector corpus. Runs at --tier L0 (rules
+    # only, no API key). vulnerable/ = real credential formats that MUST flag
+    # (they block); clean/ = known-safe high-entropy values that must NOT.
+    "secrets": "secrets",
 }
 
 
@@ -268,7 +272,10 @@ def _map_findings(finding_dicts: list) -> list[AuditFinding]:
         elif isinstance(provable_value, str):
             provable = provable_value.lower() in ("true", "1", "yes")
         else:
-            provable = bool(fd.get("rule_id")) and fd.get("rule_id") != "ai-consensus"
+            # Mirror production (entrypoint._map_findings): a missing provable
+            # means NOT provable. The eval must not certify a block that
+            # production would not make -- never infer provable from rule_id.
+            provable = False
         mapped.append(AuditFinding(
             severity=fd.get("severity") or "medium",
             category=fd.get("zone") or "general",

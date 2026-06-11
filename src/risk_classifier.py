@@ -664,7 +664,33 @@ class RiskClassifier:
             # Downgrade severity for test/fixture files
             file_path = zone.get("file", "")
             is_test = any(re.search(p, file_path, re.IGNORECASE) for p in self.file_patterns["L1"])
-            
+
+            # Deterministic secret_detector findings carry their OWN severity
+            # and provable flag (keyed on detector=="secret", NOT the zone
+            # name -- PII-Shield's entropy_secret label has no such flag and
+            # stays non-provable). This is the ONLY finding source that may be
+            # provable=True. Amendment 3: in a test/fixture file, force a
+            # non-blocking condition (high, provable=False) -- a fake secret in
+            # a fixture must never block, but stays visible.
+            if zone.get("detector") == "secret":
+                if is_test:
+                    severity, provable = "high", False
+                else:
+                    severity = zone.get("severity", "critical")
+                    provable = bool(zone.get("provable", False))
+                kind = zone.get("secret_kind", "secret")
+                findings.append(Finding(
+                    id=f"SECRET-{kind.upper()}",
+                    severity=severity,
+                    message=f"Hardcoded secret detected ({kind})",
+                    file=zone["file"],
+                    line=zone.get("line"),
+                    rule_id=f"secret-{kind}",
+                    zone=zone["zone"],
+                    provable=provable,
+                ))
+                continue
+
             base_severity = self.zone_severity.get(zone["zone"], "medium")
             severity = "info" if is_test else base_severity
 

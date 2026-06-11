@@ -550,5 +550,86 @@ class TestProvableInvariantAndTopicScoping(unittest.TestCase):
         )
 
 
+class TestSecretDetectorWiring(unittest.TestCase):
+    """P3b: the deterministic secret detector wired end-to-end
+    (analyzer -> risk_classifier -> decision engine). Restores a real
+    block path for provable secrets that P1 left structurally empty.
+
+    Fixture hygiene (amendment 5): the PEM header is assembled from split
+    parts so secret scanning cannot flag this corpus.
+    """
+
+    @staticmethod
+    def _pem():
+        return "-----BEGIN " + "RSA PRIVATE " + "KEY-----"
+
+    @staticmethod
+    def _diff(path, added):
+        body = "".join("+" + line + "\n" for line in added)
+        return (
+            f"diff --git a/{path} b/{path}\n"
+            "index 1111111..2222222 100644\n"
+            f"--- a/{path}\n"
+            f"+++ b/{path}\n"
+            f"@@ -1,1 +1,{len(added) + 1} @@\n"
+            " context\n"
+            f"{body}"
+        )
+
+    def _decide(self, path, added):
+        analysis = DiffAnalyzer(ai_review=False).analyze(self._diff(path, added))
+        risk = RiskClassifier().classify(analysis)
+        packet = DecisionEngine("standard").decide(_map_findings(risk["findings"]))
+        return analysis, risk, packet
+
+    def test_pem_in_source_blocks(self):
+        _, _, packet = self._decide("src/config.py", [self._pem()])
+        self.assertEqual(packet.decision, "block")
+        self.assertGreaterEqual(len(packet.hard_blocks), 1)
+
+    def test_pem_in_config_yaml_also_blocks(self):
+        # Secret detection is NOT topic-scoped: a committed key in a .yml must
+        # still block (the P2 constraint that config secrets stay detectable).
+        _, _, packet = self._decide("deploy/values.yaml", [self._pem()])
+        self.assertEqual(packet.decision, "block")
+
+    def test_pem_in_test_fixture_conditions_not_blocks(self):
+        # Amendment 3: a secret in a test/fixture file conditions, never blocks.
+        _, risk, packet = self._decide("tests/fixtures/sample_key.py", [self._pem()])
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(len(packet.hard_blocks), 0)
+        secret = next((f for f in risk["findings"]
+                       if str(f.get("rule_id", "")).startswith("secret-")), None)
+        self.assertIsNotNone(secret, "expected a secret finding for the fixture PEM")
+        self.assertFalse(secret["provable"],
+                         "a test-fixture secret must be non-provable (amendment 3)")
+        self.assertEqual(secret["severity"], "high")
+
+    def test_sha256_hash_field_does_not_block(self):
+        line = "content_hash = '" + ("abcdef0123456789" * 4) + "'"
+        _, _, packet = self._decide("src/bundle.py", [line])
+        self.assertEqual(packet.decision, "merge")
+
+    def test_generic_password_assignment_conditions_not_blocks(self):
+        # David's correction: generic assignment is NOT provable -> condition.
+        line = "password = 'Ab3Xy9Zk7Qw2Mn5Pr8Lt'"
+        _, risk, packet = self._decide("src/login.py", [line])
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(len(packet.hard_blocks), 0)
+        cred = next((f for f in risk["findings"]
+                     if f.get("rule_id") == "secret-hardcoded_credential"), None)
+        self.assertIsNotNone(cred, "expected a hardcoded_credential finding")
+        self.assertFalse(cred["provable"],
+                         "generic assignment must not earn block authority")
+        self.assertEqual(cred["severity"], "high")
+
+    def test_yaml_comment_prose_still_does_not_block(self):
+        # P1+P2 regression: comment keywords still merge, even with the secret
+        # detector now active on the same file.
+        added = ["# this config will encrypt the password and sign the auth token"]
+        _, _, packet = self._decide(".github/workflows/x.yml", added)
+        self.assertNotEqual(packet.decision, "block")
+
+
 if __name__ == "__main__":
     unittest.main()

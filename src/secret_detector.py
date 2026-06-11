@@ -77,35 +77,63 @@ _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-
 
 # AWS: an access-key-id ALONE is an identifier, not a secret (amendment 4).
 _AWS_KEY_ID = re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")
-# An AWS *secret* key in an aws-secret context IS provable.
+# An AWS *secret* key in an aws-secret context IS provable. Quotes optional:
+# real .env/YAML secrets are commonly UNQUOTED, so the value is bounded by a
+# negative lookahead rather than requiring a closing quote.
 _AWS_SECRET_CTX = re.compile(
-    r"aws.{0,24}secret.{0,24}[:=]\s*['\"]([A-Za-z0-9/+=]{40})['\"]",
+    r"aws.{0,24}secret.{0,24}[:=]\s*['\"]?([A-Za-z0-9/+=]{40})(?![A-Za-z0-9/+=])",
     re.IGNORECASE,
 )
 
-# Generic hardcoded credential assignment: name = "value"
+# Generic hardcoded credential assignment: name = value. The value may be
+# quoted (group 1) or UNQUOTED (group 2, env/YAML scalar -- bounded by
+# whitespace / comment / end).
 _GENERIC_ASSIGN = re.compile(
     r"""(?ix)\b(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|
         client[_-]?secret|auth[_-]?token|private[_-]?key)\b
-        \s*[:=]\s*['"]([^'"]{8,})['"]""",
+        \s*[:=]\s*
+        (?:["']([^"']{8,})["']|([^\s"'#]{8,}))""",
     re.VERBOSE,
 )
 
 # Quoted token-ish literals for the entropy tier.
 _QUOTED_TOKEN = re.compile(r"['\"]([A-Za-z0-9/+_=\-]{16,})['\"]")
+# Unquoted value after an assignment (env/YAML scalar): KEY=value / KEY: value.
+# Excludes quotes (handled by _QUOTED_TOKEN) and stops at whitespace/comment.
+_UNQUOTED_VALUE = re.compile(r"[:=]\s*([A-Za-z0-9/+_=\-]{16,})(?=\s|#|$)")
 
 # --------------------------------------------------------------------------
 # Whitelist: known-safe high-entropy values that must NEVER be flagged.
 # --------------------------------------------------------------------------
-_HASH_FIELD = re.compile(
-    r"\b\w*_hash\b.{0,20}['\"]?(?:sha256:)?[0-9a-fA-F]{64}['\"]?"
-)
-_LOCK_INTEGRITY = re.compile(r"(?i)integrity['\"]?\s*[:=]\s*['\"]?sha\d{3}-")
+# Subresource-integrity / lockfile digest VALUE shape (sha256-/384-/512- + b64).
+_SRI_VALUE = re.compile(r"^sha(?:256|384|512)-")
 _UUID = re.compile(
     r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
 )
-_BARE_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")  # sha256 / git blob, not a secret alone
+_BARE_HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")  # sha256 / git blob shape
+# A 64-hex token is safe ONLY in a hash/commit/checksum context. Whitelisting
+# every 64-hex blob was a hole: `api_key: '<64 hex>'` in a .yaml (where P2
+# suppresses topic zones) became a full miss. So the hex whitelist now requires
+# one of these context words on the line; otherwise the value is treated as a
+# candidate (at least a condition).
+# Boundaries treat `_` and `-` as separators (so `content_hash` matches `hash`,
+# but `shard` does not match `sha`). \b alone fails here because `_` is a word
+# char, which is exactly how the old global _HASH_FIELD masked this.
+_SAFE_HEX_CONTEXT = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:hash|commit|checksum|sha\d*|digest|integrity|"
+    r"etag|revision|oid|blob|sri|fingerprint|content[_-]?id|object[_-]?id)"
+    r"(?![A-Za-z0-9])"
+)
+# A UUID is safe ONLY as an identifier (request_id, trace_id, uuid, ...). Same
+# hole as the hex whitelist: a blanket UUID suppression ate the detector
+# signal for `api_key: "<uuid>"` in a .yaml (P2 topic scoping off). A UUID in a
+# secret context is no longer suppressed and at least conditions.
+_SAFE_UUID_CONTEXT = re.compile(
+    r"(?i)(?<![A-Za-z0-9])(?:uuid|guid|request[_-]?id|trace[_-]?id|"
+    r"correlation[_-]?id|span[_-]?id|session[_-]?id|transaction[_-]?id|"
+    r"message[_-]?id|event[_-]?id|run[_-]?id|job[_-]?id)(?![A-Za-z0-9])"
+)
 _PLACEHOLDER = re.compile(
     r"(?i)(?:x{4,}|<[^>]+>|your[_-]|example|changeme|dummy|placeholder|"
     r"redacted|sample|test[_-]?key|fake|\bnull\b|\bnone\b|0{8,})"
@@ -137,15 +165,51 @@ def _is_placeholder(token: str) -> bool:
     return False
 
 
-def _is_whitelisted(token: str, line: str) -> bool:
-    """True when *token* on *line* is a known-safe high-entropy value."""
-    if _HASH_FIELD.search(line) or _LOCK_INTEGRITY.search(line):
-        return True
-    if _UUID.fullmatch(token) or _UUID.search(line):
-        return True
-    if _BARE_HEX64.match(token):
-        return True
+# The assignment key that immediately governs the value at the END of *prefix*:
+# an identifier, an assign operator (`=` or `:`), and the opening quote. This
+# EXTRACTS the current key directly, so it is agnostic to how assignments are
+# separated -- semicolons, commas, or bare whitespace (shell/env style:
+# `COMMIT="x" API_KEY="x"`). Enumerating separators missed the whitespace case.
+# Optional closing quote after the key handles JSON object keys
+# (`"commit": "<hex>"`) as well as bare keys (`commit = "<hex>"`).
+# Optional closing quote after the key handles JSON object keys
+# (`"commit": "<hex>"`) as well as bare keys (`commit = "<hex>"`).
+_KEY_BEFORE_VALUE = re.compile(r"([A-Za-z_][\w.\-]*)['\"]?\s*[:=]\s*['\"]?\s*$")
+
+
+def _immediate_key(prefix: str) -> str:
+    """The assignment key governing the value that follows *prefix*.
+
+    *prefix* is the text on the line BEFORE the current value (the caller passes
+    the exact regex-match offset, never line.find). We extract ONLY the
+    identifier on the left of the assignment operator that introduces this
+    value, so in `commit = "x"; api_key = "x"` -- and equally in
+    `COMMIT="x" API_KEY="x"` -- the api_key value's key is `api_key`, not
+    `commit`. Returns "" when no clear key precedes the value (then nothing is
+    whitelisted, erring toward flagging). All whitelist context uses ONLY this.
+    """
+    m = _KEY_BEFORE_VALUE.search(prefix)
+    return m.group(1) if m else ""
+
+
+def _is_whitelisted(token: str, key_prefix: str) -> bool:
+    """True when *token* is a known-safe value given ONLY its assignment key.
+
+    Context is taken solely from *key_prefix* (the immediate assignment key),
+    never from the whole line -- so comment-smuggling and multi-assignment
+    smuggling (a safe-context word elsewhere on the line) cannot suppress a
+    secret-context value.
+    """
     if _is_placeholder(token):
+        return True
+    # Bare 64-hex (sha256 / commit / blob) in a digest/identifier KEY context.
+    if _BARE_HEX64.match(token) and _SAFE_HEX_CONTEXT.search(key_prefix):
+        return True
+    # Lockfile / SRI integrity digest value in an integrity/digest KEY context.
+    if _SRI_VALUE.match(token) and _SAFE_HEX_CONTEXT.search(key_prefix):
+        return True
+    # A UUID in an identifier KEY context (request_id, uuid, ...).
+    if (_UUID.fullmatch(token) or _UUID.search(token)) and _SAFE_UUID_CONTEXT.search(key_prefix):
         return True
     return False
 
@@ -180,22 +244,30 @@ def scan_line(text: str) -> list[_Candidate]:
         out.append(_Candidate("jwt", "high", False, "JSON Web Token"))
 
     for m in _GENERIC_ASSIGN.finditer(text):
-        val = m.group(1)
-        if _is_whitelisted(val, text) or _is_placeholder(val):
+        # group 1 = quoted value, group 2 = unquoted (env/YAML) value.
+        gi = 1 if m.group(1) is not None else 2
+        val = m.group(gi)
+        if _is_whitelisted(val, _immediate_key(text[:m.start(gi)])):
             continue
         if len(val) >= _GENERIC_MIN_LEN and shannon_entropy(val) >= _GENERIC_MIN_BITS:
-            out.append(_Candidate("hardcoded_credential", "critical", True,
+            # CONDITION only (provable=False): a name=value assignment is
+            # strong but NOT a known credential format, so it must not earn
+            # block authority by assertion. Promotion to provable is gated on
+            # the P3c secrets negative corpus (David's correction). Structural
+            # provider formats above remain provable.
+            out.append(_Candidate("hardcoded_credential", "high", False,
                                   "hardcoded credential assignment"))
 
-    for m in _QUOTED_TOKEN.finditer(text):
-        tok = m.group(1)
-        if _is_whitelisted(tok, text):
-            continue
-        if len(tok) >= _ENTROPY_MIN_LEN and shannon_entropy(tok) >= _ENTROPY_MIN_BITS:
-            # Entropy alone is a CONDITION, never a block (provable=False);
-            # promotion is gated on the P3c eval corpus.
-            out.append(_Candidate("high_entropy", "high", False,
-                                  "high-entropy literal"))
+    for pat in (_QUOTED_TOKEN, _UNQUOTED_VALUE):
+        for m in pat.finditer(text):
+            tok = m.group(1)
+            if _is_whitelisted(tok, _immediate_key(text[:m.start(1)])):
+                continue
+            if len(tok) >= _ENTROPY_MIN_LEN and shannon_entropy(tok) >= _ENTROPY_MIN_BITS:
+                # Entropy alone is a CONDITION, never a block (provable=False);
+                # promotion is gated on the P3c eval corpus.
+                out.append(_Candidate("high_entropy", "high", False,
+                                      "high-entropy literal"))
 
     return out
 
