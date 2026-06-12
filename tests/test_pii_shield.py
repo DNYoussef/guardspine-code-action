@@ -105,6 +105,12 @@ class TestPIIShieldModes(unittest.TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, diff)
 
+    def test_remote_mode_without_endpoint_defaults_fail_closed(self):
+        client = PIIShieldClient(enabled=True, mode="remote", endpoint=None)
+
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff("+email='alice@example.com'\n")
+
     def test_remote_mode_without_endpoint_fail_closed_raises(self):
         client = PIIShieldClient(enabled=True, mode="remote", endpoint=None, fail_closed=True)
         with self.assertRaises(PIIShieldError):
@@ -206,6 +212,18 @@ class TestPIIShieldRemoteBehavior(unittest.TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, raw)
         self.assertIn("remote_error", result.to_metadata()["details"])
+
+    @patch("pii_shield.requests.post")
+    def test_auto_mode_remote_error_defaults_fail_closed(self, mock_post):
+        mock_post.side_effect = requests.exceptions.ConnectionError("offline")
+        client = PIIShieldClient(
+            enabled=True,
+            mode="auto",
+            endpoint="https://example.invalid/shield",
+        )
+
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff("+email='alice@example.com'\n")
 
 
 class TestPIIShieldJsonSanitization(unittest.TestCase):
