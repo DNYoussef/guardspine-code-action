@@ -11,56 +11,138 @@ Supports:
 import hashlib
 import ipaddress
 import json
+import os
+import socket
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
 import requests
+import urllib3.connection
 
 
 _LOOPBACK_HOSTNAMES = frozenset({
     "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
 })
+_CLOUD_METADATA_HOSTNAMES = frozenset({
+    "metadata.google.internal",
+})
+_CLOUD_METADATA_IPS = frozenset({
+    "169.254.169.254",
+    "fd00:ec2::254",
+})
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+
+
+@dataclass(frozen=True)
+class _EndpointTarget:
+    url: str
+    host: str
+    port: int
+    resolved_ip: str | None
 
 
 def _validate_endpoint(url: str) -> None:
-    """Block SSRF-prone endpoints (cloud metadata, private IPs, loopback hostnames)."""
-    import os
-    import socket
+    """Block SSRF-prone endpoints (cloud metadata, non-global IPs, loopback)."""
+    _resolve_endpoint_target(url)
 
-    if os.environ.get("PII_SHIELD_ALLOW_PRIVATE", "").lower() in ("1", "true", "yes"):
-        return
 
+def _resolve_endpoint_target(url: str) -> _EndpointTarget:
+    """Validate an outbound endpoint and return the IP to pin at connect time."""
     parsed = urlparse(url)
     if parsed.scheme not in ("https", "http"):
         raise ValueError(f"PII-Shield endpoint must use http(s): {url}")
     host = parsed.hostname or ""
-    if host in ("169.254.169.254", "metadata.google.internal"):
+    if not host:
+        raise ValueError(f"PII-Shield endpoint must include a host: {url}")
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    normalized_host = host.rstrip(".").lower()
+    allow_private = _private_endpoint_override_enabled()
+
+    if normalized_host in _CLOUD_METADATA_HOSTNAMES:
         raise ValueError(f"PII-Shield endpoint cannot target cloud metadata: {url}")
 
     # Block known loopback hostnames
-    if host.lower() in _LOOPBACK_HOSTNAMES:
+    if normalized_host in _LOOPBACK_HOSTNAMES and not allow_private:
         raise ValueError(f"PII-Shield endpoint cannot target localhost: {url}")
 
     try:
         ip = ipaddress.ip_address(host)
-        if ip.is_private or ip.is_loopback:
-            raise ValueError(f"PII-Shield endpoint cannot target private IP: {url}")
+        _validate_resolved_ip(ip, url, allow_private)
+        return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=str(ip))
     except ValueError as exc:
-        if "cannot target" in str(exc):
+        if "PII-Shield endpoint" in str(exc):
             raise
-        # Not an IP literal -- resolve hostname and check resolved address
-        try:
-            resolved = socket.getaddrinfo(host, None, socket.AF_UNSPEC)
-            for _family, _type, _proto, _canonname, sockaddr in resolved:
-                resolved_ip = ipaddress.ip_address(sockaddr[0])
-                if resolved_ip.is_private or resolved_ip.is_loopback:
-                    raise ValueError(
-                        f"PII-Shield endpoint hostname resolves to private IP: {url}"
-                    )
-        except socket.gaierror:
-            pass  # DNS failure -- request will fail naturally at call time
+
+    try:
+        resolved = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        # DNS failure will fail naturally at call time. There is no IP to pin.
+        return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=None)
+
+    resolved_ips: list[str] = []
+    for _family, _type, _proto, _canonname, sockaddr in resolved:
+        resolved_ip = ipaddress.ip_address(sockaddr[0])
+        _validate_resolved_ip(resolved_ip, url, allow_private)
+        resolved_ips.append(str(resolved_ip))
+
+    pinned_ip = resolved_ips[0] if resolved_ips else None
+    return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=pinned_ip)
+
+
+def _private_endpoint_override_enabled() -> bool:
+    """Allow private endpoints only for local development, never in Actions."""
+    if os.environ.get("PII_SHIELD_ALLOW_PRIVATE", "").strip().lower() not in _TRUTHY_ENV:
+        return False
+    if os.environ.get("GITHUB_ACTIONS", "").strip().lower() in _TRUTHY_ENV:
+        return False
+    if os.environ.get("CI", "").strip().lower() in _TRUTHY_ENV:
+        return False
+    return True
+
+
+def _validate_resolved_ip(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    url: str,
+    allow_private: bool,
+) -> None:
+    ipv4_mapped = getattr(ip, "ipv4_mapped", None)
+    if str(ip).lower() in _CLOUD_METADATA_IPS or str(ipv4_mapped).lower() in _CLOUD_METADATA_IPS:
+        raise ValueError(f"PII-Shield endpoint cannot target cloud metadata: {url}")
+    if ip.is_multicast:
+        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
+    if ipv4_mapped is not None and not allow_private and not ipv4_mapped.is_global:
+        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
+    if allow_private:
+        return
+    if not ip.is_global:
+        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
+
+
+@contextmanager
+def _pin_endpoint_connection(target: _EndpointTarget):
+    """Pin urllib3's socket connect for target.host to target.resolved_ip."""
+    if not target.resolved_ip:
+        yield
+        return
+
+    connection_module = urllib3.connection.connection
+    original_create_connection = connection_module.create_connection
+
+    def create_pinned_connection(address, *args, **kwargs):
+        host, port = address
+        if str(host).rstrip(".").lower() == target.host and int(port) == target.port:
+            return original_create_connection((target.resolved_ip, port), *args, **kwargs)
+        return original_create_connection(address, *args, **kwargs)
+
+    connection_module.create_connection = create_pinned_connection
+    try:
+        yield
+    finally:
+        connection_module.create_connection = original_create_connection
 
 
 _HASH_FIELD_SUFFIXES = ("_hash",)
@@ -449,13 +531,15 @@ class PIIShieldClient:
         if purpose:
             payload["purpose"] = purpose
 
-        response = requests.post(
-            self.endpoint,
-            json=payload,
-            headers=headers,
-            timeout=self.timeout_seconds,
-            allow_redirects=False,
-        )
+        endpoint_target = _resolve_endpoint_target(self.endpoint)
+        with _pin_endpoint_connection(endpoint_target):
+            response = requests.post(
+                self.endpoint,
+                json=payload,
+                headers=headers,
+                timeout=self.timeout_seconds,
+                allow_redirects=False,
+            )
         if 300 <= response.status_code < 400:
             raise ValueError("PII-Shield endpoint redirects are not allowed")
         response.raise_for_status()

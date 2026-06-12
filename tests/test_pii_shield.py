@@ -1,5 +1,7 @@
 """Tests for provider-first PII-Shield integration behavior."""
 
+import os
+import socket
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +12,7 @@ import requests
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+import pii_shield
 from pii_shield import PIIShieldClient, PIIShieldError
 
 
@@ -43,6 +46,62 @@ class TestEndpointValidation(unittest.TestCase):
                 enabled=True, mode="remote",
                 endpoint="http://192.168.1.1/shield",
             )
+
+    def test_rejects_link_local_ipv6_metadata_ip(self):
+        with self.assertRaises(ValueError, msg="cloud metadata"):
+            PIIShieldClient(
+                enabled=True, mode="remote",
+                endpoint="http://[fd00:ec2::254]/latest/meta-data/",
+            )
+
+    def test_rejects_ipv4_mapped_metadata_ip_even_with_private_override(self):
+        with patch.dict(os.environ, {"PII_SHIELD_ALLOW_PRIVATE": "true"}, clear=True):
+            with self.assertRaises(ValueError, msg="cloud metadata"):
+                PIIShieldClient(
+                    enabled=True, mode="remote",
+                    endpoint="http://[::ffff:169.254.169.254]/latest/meta-data/",
+                )
+
+    def test_rejects_multicast_ip(self):
+        with self.assertRaises(ValueError, msg="multicast"):
+            PIIShieldClient(
+                enabled=True,
+                mode="remote",
+                endpoint="http://224.0.0.1/shield",
+            )
+
+    @patch("pii_shield.socket.getaddrinfo")
+    def test_rejects_hostname_resolving_to_private_ip(self, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.10", 443)),
+        ]
+
+        with self.assertRaises(ValueError, msg="resolved private IP"):
+            PIIShieldClient(
+                enabled=True, mode="remote",
+                endpoint="https://shield.example/api",
+            )
+
+    def test_private_override_is_dev_only(self):
+        with patch.dict(
+            os.environ,
+            {"PII_SHIELD_ALLOW_PRIVATE": "true", "GITHUB_ACTIONS": "true"},
+            clear=True,
+        ):
+            with self.assertRaises(ValueError):
+                PIIShieldClient(
+                    enabled=True,
+                    mode="remote",
+                    endpoint="http://10.0.0.1/shield",
+                )
+
+        with patch.dict(os.environ, {"PII_SHIELD_ALLOW_PRIVATE": "true"}, clear=True):
+            client = PIIShieldClient(
+                enabled=True,
+                mode="remote",
+                endpoint="http://10.0.0.1/shield",
+            )
+        self.assertEqual(client.endpoint, "http://10.0.0.1/shield")
 
     def test_rejects_non_http_scheme(self):
         with self.assertRaises(ValueError, msg="http(s)"):
@@ -162,6 +221,51 @@ class TestPIIShieldRemoteBehavior(unittest.TestCase):
         self.assertEqual(kwargs["json"]["input_format"], "diff")
         self.assertTrue(kwargs["json"]["include_findings"])
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer k")
+
+    @patch("pii_shield.socket.getaddrinfo")
+    @patch("pii_shield.requests.post")
+    def test_remote_request_pins_validated_ip_during_post(self, mock_post, mock_getaddrinfo):
+        mock_getaddrinfo.return_value = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
+        ]
+        connected_addresses = []
+
+        def fake_create_connection(address, *args, **kwargs):
+            connected_addresses.append(address)
+            return object()
+
+        def fake_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
+            pii_shield.urllib3.connection.connection.create_connection(
+                ("shield.example", 443),
+                timeout=timeout,
+            )
+            response = Mock()
+            response.status_code = 200
+            response.raise_for_status.return_value = None
+            response.json.return_value = {
+                "provider": "pii-shield-remote",
+                "sanitized_text": json["text"],
+                "redaction_count": 0,
+                "redactions_by_type": {},
+            }
+            return response
+
+        mock_post.side_effect = fake_post
+
+        client = PIIShieldClient(
+            enabled=True,
+            mode="remote",
+            endpoint="https://shield.example/api/sanitize",
+        )
+
+        with patch(
+            "pii_shield.urllib3.connection.connection.create_connection",
+            side_effect=fake_create_connection,
+        ):
+            client.sanitize_diff("+email='alice@example.com'\n")
+
+        self.assertEqual(connected_addresses, [("93.184.216.34", 443)])
+        self.assertEqual(mock_getaddrinfo.call_count, 2)
 
     @patch("pii_shield.requests.post")
     def test_remote_mode_fail_closed_raises(self, mock_post):
