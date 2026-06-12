@@ -1,8 +1,7 @@
 import os
-import json
 import wasmtime
 from pathlib import Path
-from wasmtime import Engine, Store, Module, Linker, WasiConfig, ExitTrap
+from wasmtime import Engine, Store, Module, Linker, WasiConfig
 
 class PIIWasmClient:
     _instance = None
@@ -48,6 +47,31 @@ class PIIWasmClient:
             if name in allowed_names
         ]
 
+    def _bind_ephemeral_stdin(self, wasi: WasiConfig, text: str) -> str:
+        """Bind stdin from a temp file, then unlink the path immediately.
+
+        wasmtime-py only accepts a filesystem path for stdin. The setter opens
+        the file immediately, so removing the path after binding keeps the WASI
+        handle readable without leaving plaintext behind for a later crash.
+        """
+        import tempfile
+
+        if not text.endswith("\n"):
+            text += "\n"
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as f_in:
+            f_in_path = f_in.name
+            f_in.write(text)
+            f_in.flush()
+
+        try:
+            wasi.stdin_file = f_in_path
+        finally:
+            if os.path.exists(f_in_path):
+                os.remove(f_in_path)
+
+        return f_in_path
+
     def redact(self, text: str) -> str:
         # Each call needs a fresh store/WASI context because the Go runtime 
         # executes main() and exits, or processes a stream.
@@ -72,40 +96,12 @@ class PIIWasmClient:
         wasi.inherit_stderr() # Useful for debugging
         wasi.env = self._wasi_env()
         
-        # Input/Output handling
-        # We need to capture stdout.
-        # And write text to stdin.
-        
-        # wasmtime-py WasiConfig allows providing files for stdin/stdout.
-        # We can use temporary files or pipes.
-        # For a clean implementation without disk I/O, we might need custom pipes,
-        # but WasiConfig in python mostly takes paths or inheritance.
-        # Let's use a pipe approach if possible, or temp files.
-        # Actually, `wasi_config.set_stdin_string` exists in some bindings?
-        # Checked docs: set_stdin_file, inherit_stdin.
-        
-        # Input/Output handling using temporary files
-        # wasmtime-py WasiConfig expects file paths, not FDs.
-        import tempfile
+        stdout_chunks: list[bytes] = []
 
-        with tempfile.NamedTemporaryFile(mode='w+', delete=False, encoding='utf-8') as f_in, \
-             tempfile.NamedTemporaryFile(mode='r+', delete=False, encoding='utf-8') as f_out:
-            
-            f_in_path = f_in.name
-            f_out_path = f_out.name
-            
-            # Write input
-            if not text.endswith("\n"):
-                text += "\n"
-            f_in.write(text)
-            f_in.flush()
-            # We don't need to keep f_in open, WASI opens it by path?
-            # actually wasmtime usually opens the file.
-            
         try:
-            wasi.stdin_file = f_in_path
-            wasi.stdout_file = f_out_path
-            
+            self._bind_ephemeral_stdin(wasi, text)
+            wasi.stdout_custom = lambda chunk: stdout_chunks.append(chunk) or len(chunk)
+
             store.set_wasi(wasi)
             instance = self.linker.instantiate(store, self.module)
             
@@ -123,20 +119,11 @@ class PIIWasmClient:
                 logging.getLogger(__name__).error(f"PII-Shield WASM Module failed: {str(e)}")
                 raise RuntimeError("WASM processing failed") from e
                 
-            # Read output
-            with open(f_out_path, 'r', encoding='utf-8') as f:
-                output = f.read()
-                
+            output = b"".join(stdout_chunks).decode("utf-8")
             return output.strip()
             
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"PII-Shield WASM Module failed: {str(e)}")
             raise RuntimeError("WASM processing failed") from e
-        finally:
-            # Cleanup
-            if os.path.exists(f_in_path):
-                os.remove(f_in_path)
-            if os.path.exists(f_out_path):
-                os.remove(f_out_path)
 

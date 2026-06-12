@@ -1,7 +1,7 @@
 import unittest
 import os
 import secrets
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import sys
 from pathlib import Path
 
@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from adapters.pii_wasm_client import PIIWasmClient
+from wasmtime import WasiConfig
 
 @unittest.skipIf(sys.platform == "darwin", "WASM runtime unstable on macOS (SIGKILL)")
 class TestWasmConfiguration(unittest.TestCase):
@@ -81,6 +82,78 @@ class TestWasmConfiguration(unittest.TestCase):
         self.assertEqual(wasi_env["PII_SAFE_REGEX_LIST"], "[]")
         self.assertNotIn("GITHUB_TOKEN", wasi_env)
         self.assertNotIn("OPENAI_API_KEY", wasi_env)
+
+    def test_stdin_tempfile_is_unlinked_immediately_after_wasi_bind(self):
+        client = object.__new__(PIIWasmClient)
+        wasi = WasiConfig()
+
+        input_path = client._bind_ephemeral_stdin(wasi, "secret@example.com")
+
+        self.assertFalse(
+            os.path.exists(input_path),
+            "plaintext WASM stdin file must be unlinked after WasiConfig opens it",
+        )
+
+    def test_redact_captures_stdout_in_memory(self):
+        client = object.__new__(PIIWasmClient)
+        client.engine = object()
+        client.module = object()
+
+        captured = {}
+
+        class FakeWasi:
+            env = []
+
+            def inherit_stderr(self):
+                pass
+
+            @property
+            def stdout_file(self):
+                raise AssertionError("stdout_file should not be read")
+
+            @stdout_file.setter
+            def stdout_file(self, value):
+                raise AssertionError("stdout_file should not be used")
+
+            @property
+            def stdout_custom(self):
+                return captured.get("stdout_custom")
+
+            @stdout_custom.setter
+            def stdout_custom(self, callback):
+                captured["stdout_custom"] = callback
+
+        class FakeStore:
+            def __init__(self, engine):
+                captured["store_engine"] = engine
+
+            def set_wasi(self, wasi):
+                captured["wasi"] = wasi
+
+        class FakeExports:
+            def __getitem__(self, name):
+                assert name == "_start"
+
+                def start(store):
+                    captured["stdout_custom"](b"[HIDDEN:e1]\n")
+
+                return start
+
+        class FakeInstance:
+            def exports(self, store):
+                return FakeExports()
+
+        fake_linker = Mock()
+        fake_linker.instantiate.return_value = FakeInstance()
+        client.linker = fake_linker
+
+        with patch("adapters.pii_wasm_client.WasiConfig", FakeWasi), \
+             patch("adapters.pii_wasm_client.Store", FakeStore), \
+             patch.object(client, "_bind_ephemeral_stdin") as bind_stdin:
+            output = client.redact("alice@example.com")
+
+        bind_stdin.assert_called_once_with(captured["wasi"], "alice@example.com")
+        self.assertEqual(output, "[HIDDEN:e1]")
 
 @unittest.skipIf(sys.platform == "darwin", "WASM runtime unstable on macOS (SIGKILL)")
 class TestWasmStress(unittest.TestCase):
