@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
-from src.analyzer import DiffAnalyzer
+from src.analyzer import AI_REVIEW_EMPTY_RUBRIC_SCORES, DiffAnalyzer
 
 SAMPLE_DIFF = (
     "diff --git a/app.py b/app.py\n"
@@ -41,12 +41,15 @@ _STUB_META = {"model_id": "test-model-v1"}
 # Returns (text, metadata) tuple matching the _call_* contract.
 def _make_review(verdict="approve", confidence=0.90, concerns=None):
     text = json.dumps({
-        "summary": "Test change",
-        "intent": "feature",
-        "concerns": concerns or [],
-        "risk_assessment": verdict,
-        "confidence": confidence,
-        "rubric_scores": {},
+        "codeguard_review": {
+            "schema_version": "codeguard.ai_review.v1",
+            "summary": "Test change",
+            "intent": "feature",
+            "concerns": concerns or [],
+            "risk_assessment": verdict,
+            "confidence": confidence,
+            "rubric_scores": AI_REVIEW_EMPTY_RUBRIC_SCORES,
+        },
     })
     return text, _STUB_META
 
@@ -54,12 +57,15 @@ def _make_review(verdict="approve", confidence=0.90, concerns=None):
 def _make_crosscheck_response(verdict="approve", confidence=0.90,
                                concerns=None, changed=False, reason=""):
     text = json.dumps({
-        "summary": "Cross-checked",
-        "concerns": concerns or [],
-        "risk_assessment": verdict,
-        "confidence": confidence,
-        "verdict_changed": changed,
-        "change_reason": reason,
+        "codeguard_review": {
+            "schema_version": "codeguard.ai_review.v1",
+            "summary": "Cross-checked" + (f": {reason}" if changed and reason else ""),
+            "intent": "feature",
+            "concerns": concerns or [],
+            "risk_assessment": verdict,
+            "confidence": confidence,
+            "rubric_scores": AI_REVIEW_EMPTY_RUBRIC_SCORES,
+        },
     })
     return text, _STUB_META
 
@@ -285,16 +291,19 @@ class TestDeliberation(unittest.TestCase):
         analyzer = self._make_analyzer(2)
         # Simulate model returning structured concern objects
         review_with_dict_concerns = (json.dumps({
-            "summary": "Test",
-            "intent": "feature",
-            "concerns": [
-                {"description": "SQL injection risk", "severity": "high"},
-                {"message": "Missing input validation"},
-                "Plain string concern",
-            ],
-            "risk_assessment": "request_changes",
-            "confidence": 0.85,
-            "rubric_scores": {},
+            "codeguard_review": {
+                "schema_version": "codeguard.ai_review.v1",
+                "summary": "Test",
+                "intent": "feature",
+                "concerns": [
+                    {"description": "SQL injection risk", "severity": "high"},
+                    {"message": "Missing input validation"},
+                    "Plain string concern",
+                ],
+                "risk_assessment": "request_changes",
+                "confidence": 0.85,
+                "rubric_scores": AI_REVIEW_EMPTY_RUBRIC_SCORES,
+            },
         }), _STUB_META)
 
         with patch.object(analyzer, "_call_openrouter",
