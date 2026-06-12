@@ -19,6 +19,11 @@ from typing import Any
 
 import yaml
 
+try:
+    from .severity import normalize_severity, severity_rank, validate_severity
+except ImportError:  # pragma: no cover - supports direct src/ path imports
+    from severity import normalize_severity, severity_rank, validate_severity
+
 
 # ---------------------------------------------------------------------------
 # Data
@@ -33,6 +38,9 @@ class Finding:
     description: str = ""
     recommendation: str = ""
     provable: bool = False  # True = deterministic detection, False = model opinion
+
+    def __post_init__(self) -> None:
+        self.severity = normalize_severity(self.severity)
 
 
 @dataclass
@@ -82,20 +90,35 @@ def load_policy(name_or_path: str = "standard") -> dict[str, Any]:
     if not path.exists():
         path = _PROFILES_DIR / f"{name_or_path}.yaml"
     if not path.exists():
-        return _DEFAULT_POLICY
+        raise FileNotFoundError(f"Decision policy not found: {name_or_path}")
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or _DEFAULT_POLICY
+        policy = yaml.safe_load(f) or _DEFAULT_POLICY
+    _normalize_policy_rules(policy, path)
+    return policy
+
+
+def _normalize_policy_rules(policy: dict[str, Any], path: Path) -> None:
+    """Normalize configured severity rules, rejecting invalid policy typos."""
+    for section in ("hard_block_rules", "condition_rules"):
+        rules = policy.get(section, [])
+        if not isinstance(rules, list):
+            raise ValueError(f"{section} in decision policy {path} must be a list")
+        for idx, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                raise ValueError(f"{section}[{idx}] in decision policy {path} must be a map")
+            if "severity" in rule:
+                rule["severity"] = validate_severity(
+                    rule["severity"],
+                    context=f"{section}[{idx}].severity in decision policy {path}",
+                )
 
 
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
 
-_SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
-
-
 def _severity_key(f: Finding) -> int:
-    return _SEVERITY_RANK.get(f.severity, 0)
+    return severity_rank(f.severity)
 
 
 def _matches_rule(finding: Finding, rule: dict[str, Any]) -> bool:

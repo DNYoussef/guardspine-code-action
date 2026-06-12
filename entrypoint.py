@@ -24,6 +24,7 @@ from src.bundle_generator import BundleGenerator
 from src.pr_commenter import PRCommenter
 from src.sarif_exporter import SARIFExporter
 from src.pii_shield import PIIShieldClient, PIIShieldError
+from src.severity import normalize_severity
 
 from src.decision_engine import Finding as AuditFinding, DecisionEngine, render_decision_card
 
@@ -766,7 +767,7 @@ def _map_findings(finding_dicts: list[dict]) -> list[AuditFinding]:
             # silently made them all provable and let comment prose hard-block.
             provable = False
         mapped.append(AuditFinding(
-            severity=fd.get("severity", "medium"),
+            severity=normalize_severity(fd.get("severity", "medium")),
             category=fd.get("zone", "general"),
             location=location,
             description=fd.get("message", ""),

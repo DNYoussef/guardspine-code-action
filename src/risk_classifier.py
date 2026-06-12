@@ -13,6 +13,11 @@ from dataclasses import dataclass
 
 import yaml
 
+try:
+    from .severity import normalize_severity, severity_rank, validate_severity
+except ImportError:  # pragma: no cover - supports direct src/ path imports
+    from severity import normalize_severity, severity_rank, validate_severity
+
 if TYPE_CHECKING:
     from .analyzer import AnalysisResult
 
@@ -34,6 +39,9 @@ class Finding:
     # explicitly. This is the single invariant that makes decision==block mean
     # "provable danger" rather than "a keyword appeared."
     provable: bool = False
+
+    def __post_init__(self) -> None:
+        self.severity = normalize_severity(self.severity)
 
 
 class RiskClassifier:
@@ -303,7 +311,7 @@ class RiskClassifier:
 
                 rules.append({
                     "id": rid,
-                    "severity": rule.get("severity", "medium"),
+                    "severity": normalize_severity(rule.get("severity", "medium")),
                     "message": (
                         rule.get("message")
                         or rule.get("description")
@@ -324,7 +332,7 @@ class RiskClassifier:
                     compiled = None
                 rules.append({
                     "id": rid,
-                    "severity": rule.get("severity", "medium"),
+                    "severity": normalize_severity(rule.get("severity", "medium")),
                     "message": rule.get("message", "Policy rule triggered"),
                     "pattern": rule.get("pattern", ""),
                     "compiled": compiled,
@@ -366,7 +374,7 @@ class RiskClassifier:
             for zone, severity in zone_severity.items():
                 if not isinstance(zone, str) or not isinstance(severity, str):
                     raise ValueError(f"zone_severity entries in {path} must be string pairs")
-                if severity not in valid:
+                if severity.strip().lower() not in valid:
                     raise ValueError(f"zone_severity[{zone}] in {path} has invalid level {severity}")
 
         size_thresholds = policy.get("size_thresholds", {})
@@ -408,7 +416,10 @@ class RiskClassifier:
         zone_severity = policy.get("zone_severity")
         if isinstance(zone_severity, dict):
             for zone, sev in zone_severity.items():
-                self.zone_severity[zone] = sev
+                self.zone_severity[zone] = validate_severity(
+                    sev,
+                    context=f"zone_severity[{zone}] in {path}",
+                )
 
         size_thresholds = policy.get("size_thresholds")
         if isinstance(size_thresholds, dict):
@@ -627,12 +638,11 @@ class RiskClassifier:
         if not zones:
             return 0
 
-        severity_rank = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
         max_score = 0
 
         for z in zones:
             sev = self.zone_severity.get(z.get("zone"), "medium")
-            max_score = max(max_score, severity_rank.get(sev, 2))
+            max_score = max(max_score, severity_rank(sev))
 
         return max_score
 
@@ -676,7 +686,7 @@ class RiskClassifier:
                 if is_test:
                     severity, provable = "high", False
                 else:
-                    severity = zone.get("severity", "critical")
+                    severity = normalize_severity(zone.get("severity", "critical"))
                     provable = bool(zone.get("provable", False))
                 kind = zone.get("secret_kind", "secret")
                 findings.append(Finding(
@@ -692,7 +702,7 @@ class RiskClassifier:
                 continue
 
             base_severity = self.zone_severity.get(zone["zone"], "medium")
-            severity = "info" if is_test else base_severity
+            severity = "info" if is_test else normalize_severity(base_severity)
 
             findings.append(Finding(
                 id=f"ZONE-{zone['zone'].upper()}",
@@ -748,7 +758,7 @@ class RiskClassifier:
 
                 is_test = any(re.search(p, path, re.IGNORECASE) for p in self.file_patterns["L1"])
                 base_severity = rule.get("severity", "medium")
-                severity = "info" if is_test else base_severity
+                severity = "info" if is_test else normalize_severity(base_severity)
 
                 findings.append(Finding(
                     id=f"RUBRIC-{rule.get('id')}",
@@ -802,7 +812,7 @@ class RiskClassifier:
             })
 
         # Finding-based drivers - include file/line
-        for finding in sorted(findings, key=lambda f: {"critical": 0, "high": 1, "medium": 2}.get(f.severity, 3))[:3]:
+        for finding in sorted(findings, key=lambda f: -severity_rank(f.severity))[:3]:
             desc = finding.message
             if finding.file:
                 loc = finding.file

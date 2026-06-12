@@ -26,7 +26,7 @@ from src.analyzer import DiffAnalyzer
 from src.bundle_generator import BundleGenerator
 from src.risk_classifier import RiskClassifier
 from entrypoint import _map_findings, fetch_pr_diff, main, set_output
-from src.decision_engine import DecisionEngine
+from src.decision_engine import DecisionEngine, Finding as DecisionFinding
 
 
 class TestActionSupplyChainRegressions(unittest.TestCase):
@@ -122,6 +122,83 @@ class TestDecisionIntegrityRegressions(unittest.TestCase):
             }
         ]))
         self.assertNotEqual(packet.decision, "block")
+
+    def test_decision_policy_typo_does_not_silently_use_standard(self):
+        with self.assertRaises(FileNotFoundError):
+            DecisionEngine("standardd")
+
+    def test_mis_cased_provable_critical_still_blocks(self):
+        packet = DecisionEngine("standard").decide(_map_findings([
+            {
+                "severity": " Critical ",
+                "message": "Deterministic detection",
+                "rule_id": "real-detector",
+                "provable": True,
+            }
+        ]))
+        self.assertEqual(packet.decision, "block")
+        self.assertEqual(packet.hard_blocks[0].severity, "critical")
+
+    def test_mis_cased_high_normalizes_without_overpromoting(self):
+        packet = DecisionEngine("standard").decide(_map_findings([
+            {
+                "severity": " HIGH ",
+                "message": "Heuristic finding",
+                "rule_id": "rubric-test",
+                "provable": False,
+            }
+        ]))
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(packet.conditions[0].severity, "high")
+
+    def test_unknown_finding_severity_fails_closed_not_merge(self):
+        packet = DecisionEngine("standard").decide([
+            DecisionFinding(
+                severity="catastrophic",
+                category="security",
+                description="Malformed severity from upstream",
+                provable=False,
+            )
+        ])
+        self.assertEqual(packet.decision, "merge-with-conditions")
+        self.assertEqual(packet.conditions[0].severity, "critical")
+
+    def test_rubric_severity_case_keeps_deterministic_l4_floor(self):
+        data = {
+            "rules": [
+                {
+                    "id": "SEC-CASE",
+                    "pattern": "payment",
+                    "severity": " Critical ",
+                    "message": "Payment code touched",
+                }
+            ]
+        }
+        with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+            json.dump(data, f)
+            rubric_path = Path(f.name)
+
+        try:
+            analysis = {
+                "files": [{
+                    "path": "src/checkout.py",
+                    "hunks": [{
+                        "lines": [
+                            {"type": "add", "content": "payment = True", "line_number": 4},
+                        ],
+                    }],
+                }],
+                "sensitive_zones": [],
+                "lines_added": 1,
+                "lines_removed": 0,
+            }
+            risk = RiskClassifier(rubric="custom", rubric_path=rubric_path).classify(analysis)
+        finally:
+            rubric_path.unlink(missing_ok=True)
+
+        finding = next(f for f in risk["findings"] if f["rule_id"] == "SEC-CASE")
+        self.assertEqual(finding["severity"], "critical")
+        self.assertEqual(risk["risk_tier"], "L4")
 
 
 class TestDeliberationOrderingRegression(unittest.TestCase):
