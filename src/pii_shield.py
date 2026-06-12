@@ -190,7 +190,7 @@ class PIIShieldClient:
         endpoint: str | None = None,
         api_key: str | None = None,
         timeout_seconds: float = 5.0,
-        fail_closed: bool = False,
+        fail_closed: bool = True,
         salt_fingerprint: str = "sha256:00000000",
         safe_regex_list: str | None = None,
     ):
