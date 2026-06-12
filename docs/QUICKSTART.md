@@ -46,7 +46,7 @@ jobs:
   governance:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: DNYoussef/codeguard-action@v1
         id: guard
@@ -54,7 +54,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: evidence-bundle-${{ github.event.pull_request.number }}

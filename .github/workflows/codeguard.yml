@@ -12,10 +12,12 @@ jobs:
     name: GuardSpine CodeGuard
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
+      # First-party dogfood intentionally exercises the published @v1 consumer
+      # contract; third-party actions are pinned above.
       - uses: DNYoussef/codeguard-action@v1
         with:
           risk_threshold: L3

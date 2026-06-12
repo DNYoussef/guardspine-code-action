@@ -1,0 +1,4 @@
+-r requirements.in
+
+# CI/test runner dependencies
+pytest>=8.0.0

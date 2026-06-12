@@ -48,7 +48,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: DNYoussef/codeguard-action@v1
         id: guard
         with:
@@ -60,7 +60,7 @@ jobs:
           pii_shield_endpoint: ${{ vars.PII_SHIELD_ENDPOINT }}  # or omit for local mode
         env:
           PII_SHIELD_API_KEY: ${{ secrets.PII_SHIELD_API_KEY }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: evidence-bundle
@@ -177,7 +177,8 @@ When AI models review the diff, their consensus adjusts finding severity before 
 
 ## Dependencies
 
-Runtime dependencies (`requirements.txt`):
+Runtime dependency floors (`requirements.in`; locked with hashes in
+`requirements.txt`):
 
 | Package | Purpose |
 |---------|---------|
@@ -275,7 +276,7 @@ Export findings to GitHub Security tab:
   with:
     upload_sarif: true
 
-- uses: github/codeql-action/upload-sarif@v3
+- uses: github/codeql-action/upload-sarif@b0c4fd77f6c559021d78430ec4d0d169ae74a4eb # v3
   with:
     sarif_file: guardspine-results.sarif
 ```
@@ -465,7 +466,7 @@ jobs:
         ports:
           - 11434:11434
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Pull Ollama model
         run: |
           curl -X POST http://localhost:11434/api/pull -d '{"name": "llama3.3"}'
@@ -482,7 +483,7 @@ jobs:
 - uses: DNYoussef/codeguard-action@v1
   id: codeguard
 
-- uses: actions/upload-artifact@v4
+- uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
   with:
     name: evidence-bundle
     path: ${{ steps.codeguard.outputs.bundle_path }}
@@ -602,13 +603,13 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: DNYoussef/codeguard-action@v1
         id: codeguard
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           risk_threshold: L3
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: evidence-bundle
@@ -757,7 +758,10 @@ Store the salt in a shared secret manager (Vault, AWS Secrets Manager, K8s Secre
 codeguard-action/
   action.yml              GitHub Action definition (inputs, outputs, Docker)
   entrypoint.py           Main entrypoint, wires all components
-  requirements.txt        Python dependencies
+  requirements.in         Runtime dependency floors
+  requirements.txt        Generated runtime dependency lock with hashes
+  requirements-ci.in      CI/test dependency floors
+  requirements-ci.txt     Generated CI/test dependency lock with hashes
   Dockerfile              Docker image for GitHub Actions
   src/
     analyzer.py           Diff parser, sensitive zone detection, multi-model AI review
