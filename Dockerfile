@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /action
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
 # Stage everything into /staging so the final image is a single COPY
 RUN mkdir -p /staging/usr/bin \
@@ -31,7 +31,7 @@ COPY rubrics/ /staging/action/rubrics/
 COPY entrypoint.py /staging/action/
 
 # --- Single layer on top of base ---
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:f9fa7f851e38bfb19c9de3afbc4b86ae7176ea7aaf94535c31df5458d5849457
 
 LABEL maintainer="GuardSpine <support@guardspine.io>"
 LABEL org.opencontainers.image.source="https://github.com/DNYoussef/codeguard-action"
