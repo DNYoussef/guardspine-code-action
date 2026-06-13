@@ -1,9 +1,9 @@
-# GuardSpine CodeGuard
+# GuardSpine Code
 
 **AI-powered code governance with cryptographically verifiable evidence bundles**
 
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-GuardSpine%20CodeGuard-blue?logo=github)](https://github.com/marketplace/actions/guardspine-codeguard)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-GuardSpine%20GuardSpine Code-blue?logo=github)](https://github.com/marketplace/actions/guardspine-codeguard)
+[![License: BSL 1.1](https://img.shields.io/badge/license-BSL%201.1-blue.svg)](LICENSE)
 
 ---
 
@@ -37,7 +37,7 @@ Ollama requires no API key (self-hosted, air-gapped).
 **2. Create `.github/workflows/codeguard.yml`:**
 
 ```yaml
-name: CodeGuard
+name: GuardSpine Code
 on: [pull_request]
 
 permissions:
@@ -136,7 +136,7 @@ PR opened/updated
 
 ## Decision Engine
 
-The decision engine is the core of CodeGuard. It collapses all findings into exactly one of three verdicts:
+The decision engine is the core of GuardSpine Code. It collapses all findings into exactly one of three verdicts:
 
 | Verdict | Meaning | When |
 |---------|---------|------|
@@ -211,7 +211,7 @@ The decision engine (`src/decision_engine.py`) is the canonical copy. It was ori
 
 ### Diff Analysis Output
 
-![CodeGuard Diff Analysis](docs/diff-analysis-demo.png)
+![GuardSpine Code Diff Analysis](docs/diff-analysis-demo.png)
 
 *Sensitive zones automatically detected in auth and payment code with risk tier assignment*
 
@@ -431,7 +431,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
 
 #### Option 4: Single Provider (legacy/simple)
 
-Just provide one API key -- CodeGuard will use default models:
+Just provide one API key -- GuardSpine Code will use default models:
 
 ```yaml
 # Anthropic only (uses Claude Haiku 4.5 for all tiers)
@@ -590,7 +590,7 @@ mkdir -p .github/workflows
 
 # Step 2: Write the workflow
 cat > .github/workflows/codeguard.yml << 'EOF'
-name: CodeGuard
+name: GuardSpine Code
 on:
   pull_request:
     types: [opened, synchronize]
@@ -618,7 +618,7 @@ EOF
 
 # Step 3: Commit
 git add .github/workflows/codeguard.yml
-git commit -m "Add GuardSpine CodeGuard for PR governance"
+git commit -m "Add GuardSpine Code for PR governance"
 ```
 
 ### Agent Configuration Options
@@ -648,7 +648,7 @@ Before installing, check:
 ```bash
 # Check if already installed
 if [ -f .github/workflows/codeguard.yml ]; then
-  echo "CodeGuard already installed"
+  echo "GuardSpine Code already installed"
   cat .github/workflows/codeguard.yml
 fi
 ```
@@ -657,7 +657,7 @@ fi
 
 ## PII-Shield Integration
 
-CodeGuard integrates [PII-Shield](https://github.com/aragossa/pii-shield) to prevent secrets and personally identifiable information from leaking into AI prompts, PR comments, and evidence bundles.
+GuardSpine Code integrates [PII-Shield](https://github.com/aragossa/pii-shield) to prevent secrets and personally identifiable information from leaking into AI prompts, PR comments, and evidence bundles.
 
 ### Why PII-Shield Matters
 
@@ -736,7 +736,7 @@ The raw diff is **never** modified. PII-Shield operates on copies sent to AI mod
 
 GuardSpine's own SHA-256 hashes are high-entropy by design -- the exact thing PII-Shield is built to detect. Without special handling, PII-Shield would flag every `content_hash`, `chain_hash`, and `root_hash` in a bundle as a secret.
 
-CodeGuard solves this by automatically extracting hash fields before sanitization and reinjecting them after. Fields matching these patterns are preserved:
+GuardSpine Code solves this by automatically extracting hash fields before sanitization and reinjecting them after. Fields matching these patterns are preserved:
 
 - `*_hash`, `*_digest`, `*_checksum`, `*_hmac`, `*_signature`
 - `root_hash`, `chain_hash`, `content_hash`, `previous_hash`, `diff_hash`
@@ -787,7 +787,7 @@ codeguard-action/
 ## FAQ
 
 **Q: Does this replace code review?**
-A: No. CodeGuard adds *evidence* to your existing review process. Humans still review; GuardSpine proves what they saw.
+A: No. GuardSpine Code adds *evidence* to your existing review process. Humans still review; GuardSpine proves what they saw.
 
 **Q: What if I disagree with the risk tier?**
 A: The tier is based on file patterns, zone detection, and change size. You can adjust the threshold, create custom rubrics, or override risk patterns with a `risk_policy` YAML file.
@@ -810,7 +810,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-Apache License 2.0 -- see [LICENSE](LICENSE) for details.
+Business Source License 1.1 (source-available) -- see [LICENSE](LICENSE). Free for non-commercial, evaluation, and small-organization use (annual revenue under USD 1,000,000); other production use requires a commercial license from GuardSpine, Inc. Each version converts to Apache-2.0 four years after its release.
 
 ---
 

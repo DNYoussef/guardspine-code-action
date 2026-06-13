@@ -1,6 +1,6 @@
-# CodeGuard Validation Test Harness
+# GuardSpine Code Validation Test Harness
 
-Deterministic pytest suite that validates CodeGuard against synthetic minimal-reproduction PR diffs derived from real incident patterns.
+Deterministic pytest suite that validates GuardSpine Code against synthetic minimal-reproduction PR diffs derived from real incident patterns.
 
 **Primary success metric: false negatives on L2-L4.**
 
@@ -12,7 +12,7 @@ pip install pytest
 pytest -v
 ```
 
-This runs in **replay mode** (default), loading pre-built fixture responses from `fixtures/outputs/`. No API keys or live CodeGuard instance needed.
+This runs in **replay mode** (default), loading pre-built fixture responses from `fixtures/outputs/`. No API keys or live GuardSpine Code instance needed.
 
 ## Test Cases (12 total)
 
@@ -33,7 +33,7 @@ This runs in **replay mode** (default), loading pre-built fixture responses from
 
 ## Test Functions
 
-- **test_detection** -- Did CodeGuard catch the issue? (L0 controls should NOT detect)
+- **test_detection** -- Did GuardSpine Code catch the issue? (L0 controls should NOT detect)
 - **test_classification** -- Risk level: strict match for L4, +/-1 tolerance for others
 - **test_council_consensus** -- L2+ only: naive hit rate, round-robin delta, consensus correctness, actionability
 - **test_controls_do_not_overflag** -- L0 must not detect, L1 must not classify as L2+
@@ -46,7 +46,7 @@ Loads deterministic JSON fixtures from `fixtures/outputs/`. Safe for CI.
 
 ### Live
 
-Set `CODEGUARD_LIVE=1` to run against the real CodeGuard action. Live mode does NOT gate CI pass/fail -- it generates a separate report and optionally updates fixtures.
+Set `CODEGUARD_LIVE=1` to run against the real GuardSpine Code action. Live mode does NOT gate CI pass/fail -- it generates a separate report and optionally updates fixtures.
 
 ```bash
 CODEGUARD_LIVE=1 pytest -v

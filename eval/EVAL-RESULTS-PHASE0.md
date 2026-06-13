@@ -1,4 +1,4 @@
-# CodeGuard Action - Phase 0 Eval Results
+# GuardSpine Code Action - Phase 0 Eval Results
 
 **Date**: 2026-02-06 (updated 2026-02-07 after P0+P1+P2+P3 fixes)
 **Harness Version**: v3.0

@@ -1,4 +1,4 @@
-GuardSpine CodeGuard -- 5-Minute Quickstart
+GuardSpine Code -- 5-Minute Quickstart
 ============================================
 
 Get AI-powered code governance with tamper-proof evidence on every pull request.
@@ -21,7 +21,7 @@ You need ONE of these (pick whichever you already have):
   ANTHROPIC_API_KEY     Direct Claude access. console.anthropic.com
   OPENAI_API_KEY        Direct GPT access. platform.openai.com
 
-No API key? CodeGuard still works in rules-only mode (risk tiers + evidence
+No API key? GuardSpine Code still works in rules-only mode (risk tiers + evidence
 bundles, no AI review). You can add a key later.
 
 
@@ -35,7 +35,7 @@ Create this file in your repo:
 Paste this content:
 
 ```yaml
-name: CodeGuard
+name: GuardSpine Code
 on: [pull_request]
 
 permissions:
@@ -67,7 +67,7 @@ That's the minimal config. Commit it to your default branch.
 STEP 3: Open a pull request (1 minute)
 ---------------------------------------
 
-Make any change on a branch and open a PR. CodeGuard runs automatically.
+Make any change on a branch and open a PR. GuardSpine Code runs automatically.
 
 First run takes ~2 minutes while GitHub builds the Docker image. Subsequent
 runs reuse the cached image and finish faster.

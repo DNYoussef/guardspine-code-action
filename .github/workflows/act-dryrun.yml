@@ -1,4 +1,4 @@
-name: CodeGuard Act Dryrun
+name: GuardSpine Code Act Dryrun
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: GuardSpine CodeGuard (stubbed offline)
+      - name: GuardSpine Code (stubbed offline)
         id: guard
         uses: ./
         env:
