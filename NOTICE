@@ -1,0 +1,16 @@
+NOTICE
+
+GuardSpine Code (c) 2026 GuardSpine, Inc.
+Licensed under the Business Source License 1.1. See LICENSE.
+
+This product includes PII-Shield (lib/pii-shield.wasm and integration code),
+authored by aragossa. PII-Shield was contributed under Apache License 2.0.
+A written confirmation that the PII-Shield code and the pii-shield.wasm binary
+may be redistributed under the Business Source License 1.1 is being obtained;
+until then those portions remain available under Apache License 2.0.
+
+This product depends on third-party Python packages installed via pip and used
+unmodified, each under its own license, including: PyGithub (LGPL-3.0),
+requests (Apache-2.0), PyYAML (MIT), unidiff (MIT), cryptography (Apache-2.0 /
+BSD-3-Clause), openai (Apache-2.0), anthropic (MIT), wasmtime (Apache-2.0),
+toml (MIT).
