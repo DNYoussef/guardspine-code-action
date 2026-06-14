@@ -313,9 +313,9 @@ docstring-parser==0.18.0 \
     --hash=sha256:292510982205c12b1248696f44959db3cdd1740237a968ea1e2e7a900eeb2015 \
     --hash=sha256:b3fcbed555c47d8479be0796ef7e19c2670d428d72e96da63f3a40122860374b
     # via anthropic
-guardspine-kernel==0.2.0 \
-    --hash=sha256:2bad7c0594a0727f80b401d748a6943ae3e01a82a6dd2745a6af7b8e3eaff3ba \
-    --hash=sha256:589dc0964e0709201f87040b506fab263c57dccea5da5d3a3f9da942573b724f
+guardspine-kernel==2.0.0 \
+    --hash=sha256:6e2cb6f61b84228783b5c550ea8b7c8acd0af84a8cc0d98beeb1be64120edac7 \
+    --hash=sha256:e5498279ccdb9f71651e6fb5964545225cb97e8a999ee2d2dc89153407006626
     # via -r requirements.in
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
