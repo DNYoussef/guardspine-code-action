@@ -35,6 +35,8 @@ class Finding:
     line: int | None
     rule_id: str
     zone: str | None = None
+    control_category: str | None = None  # compliance control family, e.g. "CC-AccessControl"
+    control_name: str | None = None      # human control name, e.g. "Change Management"
     # `provable` defaults to FALSE: a finding earns hard-block authority only
     # by being a deterministic detection (AST/dataflow/entropy). Everything
     # produced here -- sensitive-zone keyword matches and rubric regex rules --
@@ -321,6 +323,8 @@ class RiskClassifier:
                         or rule.get("description")
                         or "Policy rule triggered"
                     ),
+                    "control_category": rule.get("category"),
+                    "control_name": rule.get("name"),
                     "pattern": raw_patterns[0],
                     "patterns": raw_patterns,
                     "compiled": compiled_patterns[0],  # backwards compatibility
@@ -771,6 +775,8 @@ class RiskClassifier:
                     file=path,
                     line=matched_line,
                     rule_id=rule.get("id", ""),
+                    control_category=rule.get("control_category"),
+                    control_name=rule.get("control_name"),
                 ))
 
         return findings
@@ -874,6 +880,8 @@ class RiskClassifier:
             "line": finding.line,
             "rule_id": finding.rule_id,
             "zone": finding.zone,
+            "control_category": finding.control_category,
+            "control_name": finding.control_name,
             "provable": finding.provable,
         }
 
