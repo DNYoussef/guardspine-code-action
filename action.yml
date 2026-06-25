@@ -27,6 +27,10 @@ inputs:
     description: 'Generate evidence bundle artifact'
     required: false
     default: 'true'
+  attestation_key:
+    description: 'PEM private key (Ed25519/RSA/EC) to sign evidence bundles for anti-forgery. When set, bundles are cryptographically signed so auditors can verify offline against your trusted public key. Leave empty for unsigned, integrity-only (tamper-evident) bundles. Provide via a GitHub secret.'
+    required: false
+    default: ''
   upload_sarif:
     description: 'Upload findings to GitHub Security tab (SARIF)'
     required: false
@@ -181,6 +185,7 @@ runs:
     INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
     INPUT_POST_COMMENT: ${{ inputs.post_comment }}
     INPUT_GENERATE_BUNDLE: ${{ inputs.generate_bundle }}
+    INPUT_ATTESTATION_KEY: ${{ inputs.attestation_key }}
     INPUT_UPLOAD_SARIF: ${{ inputs.upload_sarif }}
     INPUT_FAIL_ON_HIGH_RISK: ${{ inputs.fail_on_high_risk }}
     INPUT_OPENAI_API_KEY: ${{ inputs.openai_api_key }}

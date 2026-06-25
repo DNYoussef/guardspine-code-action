@@ -570,6 +570,12 @@ def main():
     if generate_bundle:
         print("::group::Generating evidence bundle")
         generator = BundleGenerator()
+        # Optional anti-forgery signing key (PEM). When set, bundles are signed so
+        # auditors can verify offline against the producer's trusted public key.
+        # Unset -> bundles are unsigned (integrity tier only). No HMAC fallback:
+        # a bad key fails loud rather than silently producing a non-anti-forgery MAC.
+        attestation_key = (get_env("INPUT_ATTESTATION_KEY", "")
+                           or os.environ.get("GUARDSPINE_ATTESTATION_KEY", "")) or None
         if sanitization_summary:
             analysis["sanitization"] = dict(sanitization_summary)
         bundle = generator.create_bundle(
@@ -577,7 +583,8 @@ def main():
             analysis=analysis,
             risk_result=risk_result,
             repository=github_repository,
-            commit_sha=github_sha
+            commit_sha=github_sha,
+            attestation_key=attestation_key,
         )
 
         if sanitization_summary:
@@ -608,6 +615,12 @@ def main():
                 print(f"::warning::PII-Shield error in bundle sanitization: {exc}")
                 if pii_shield_fail_closed:
                     sys.exit(1)
+
+        # The bundle was mutated after create_bundle stamped it (sanitization +
+        # optional PII redaction above); re-seal so bundle_hash matches the FINAL
+        # saved bytes -- and RE-SIGN with the same key so a signed artifact stays
+        # signed (seal_bundle refuses to silently drop a signature).
+        generator.seal_bundle(bundle, attestation_key=attestation_key)
 
         # Save bundle
         bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -772,10 +785,17 @@ def _map_findings(finding_dicts: list[dict]) -> list[AuditFinding]:
             provable = False
         mapped.append(AuditFinding(
             severity=normalize_severity(fd.get("severity", "medium")),
-            category=fd.get("zone", "general"),
+            category=fd.get("control_category") or fd.get("zone") or "general",
             location=location,
-            description=fd.get("message", ""),
-            recommendation=f"Review {fd.get('rule_id', 'finding')}",
+            description=(
+                f"{fd.get('control_name')}: {fd.get('message', '')}"
+                if fd.get("control_name") else fd.get("message", "")
+            ),
+            recommendation=(
+                f"Maps to {fd.get('rule_id')} ({fd.get('control_category')})"
+                if fd.get("control_category")
+                else f"Review {fd.get('rule_id', 'finding')}"
+            ),
             provable=provable,
         ))
     return mapped
