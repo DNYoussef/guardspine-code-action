@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from base64 import b64encode
+from base64 import b64encode, b64decode
 from datetime import datetime, timezone
 from typing import Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
@@ -247,16 +247,66 @@ class BundleGenerator:
             "signatures": [],
         }
 
-        # Add signature if key provided
-        if attestation_key:
-            signature = self._sign_bundle(
-                bundle,
-                attestation_key,
-                allow_insecure_fallback=allow_insecure_signature_fallback,
-            )
-            bundle["signatures"].append(signature)
-
+        # Seal as the final step: whole-bundle hash + optional signature.
+        self.seal_bundle(
+            bundle,
+            attestation_key=attestation_key,
+            allow_insecure_signature_fallback=allow_insecure_signature_fallback,
+        )
         return bundle
+
+    def seal_bundle(
+        self,
+        bundle: dict,
+        attestation_key: str | None = None,
+        allow_insecure_signature_fallback: bool = False,
+        strip_signatures: bool = False,
+    ) -> dict:
+        """Stamp the whole-bundle hash (and optionally sign). MUST be the LAST
+        thing done to a bundle: any mutation afterwards invalidates the seal.
+        If a bundle is mutated after create_bundle (e.g. post-hoc PII
+        sanitization), call this again to re-seal the final bytes -- otherwise
+        the saved artifact fails its own verify_bundle_chain.
+
+        If the bundle already carries signatures, re-sealing would invalidate them
+        (the payload changed). Pass attestation_key to RE-SIGN, or strip_signatures=
+        True to deliberately drop them -- otherwise this raises rather than silently
+        discarding a real signature.
+        """
+        if bundle.get("signatures") and not attestation_key and not strip_signatures:
+            raise ValueError(
+                "seal_bundle would drop existing signatures: pass attestation_key "
+                "to re-sign, or strip_signatures=True to drop them deliberately"
+            )
+        # Re-sign from scratch: a stale signature over pre-mutation bytes is invalid.
+        bundle["signatures"] = []
+        # Keyless whole-bundle seal: any byte change in ANY field changes this.
+        # Covers summary/analysis_snapshot/context/sanitization, which the
+        # per-item root_hash does not. Recomputable by anyone -- tamper-evidence,
+        # not non-repudiation (that still needs an attestation_key).
+        bundle["bundle_hash"] = self._compute_bundle_hash(bundle)
+        if attestation_key:
+            bundle["signatures"].append(
+                self._sign_bundle(
+                    bundle,
+                    attestation_key,
+                    allow_insecure_fallback=allow_insecure_signature_fallback,
+                )
+            )
+        return bundle
+
+    @staticmethod
+    def _compute_bundle_hash(bundle: dict) -> str:
+        """SHA-256 over the canonical bundle, excluding the digest + signatures.
+
+        Recomputable by anyone, so altering any top-level field (summary,
+        analysis_snapshot, context, ...) is detectable -- not just the items the
+        root_hash already chains. Stays "hash-chained, not signed": keyless.
+        """
+        payload = {k: v for k, v in bundle.items()
+                   if k not in ("bundle_hash", "signatures")}
+        canonical = canonical_json_dumps(payload).encode("utf-8")
+        return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
     def _generate_bundle_id(self, repository: str, pr_number: int, commit_sha: str) -> str:
         """Generate a deterministic UUID v5 bundle ID from inputs."""
@@ -408,6 +458,10 @@ class BundleGenerator:
             )
             public_fingerprint = hashlib.sha256(public_key_bytes).hexdigest()
             signature_value = b64encode(signature).decode()
+            public_key_pem = key.public_key().public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            ).decode()
 
             return {
                 "signature_id": signature_id,
@@ -416,6 +470,11 @@ class BundleGenerator:
                 "signature_value": signature_value,
                 "signed_at": signed_at,
                 "public_key_id": f"sha256:{public_fingerprint}",
+                # Embed the public key so bundles are self-contained: a verifier
+                # can check the signature AND pin the fingerprint without a side
+                # channel. Trust still requires the fingerprint to be allow-listed
+                # by the verifier -- the embedded key is NEVER trusted on its own.
+                "public_key": public_key_pem,
             }
         except ImportError as exc:
             if not allow_insecure_fallback:
@@ -447,12 +506,112 @@ class BundleGenerator:
             }
 
 
-def verify_bundle_chain(bundle: dict) -> tuple[bool, str]:
-    """
-    Verify the hash chain in a bundle.
+def _load_public_key_der(key_source: str):
+    """Load a PEM/DER-b64 public key; return (key_obj, der_spki_bytes). Raises on bad key."""
+    from cryptography.hazmat.primitives import serialization
+    data = key_source.encode() if isinstance(key_source, str) else key_source
+    if b"BEGIN" in data:
+        key = serialization.load_pem_public_key(data)
+    else:
+        key = serialization.load_der_public_key(b64decode(key_source, validate=True))
+    der = key.public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return key, der
 
-    Returns:
-        Tuple of (is_valid, message)
+
+def _verify_asym(algo: str, public_key, signature: bytes, content: bytes) -> bool:
+    """True iff `signature` is a valid `algo` signature over `content`. Fail-closed."""
+    try:
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ed25519, padding, rsa, ec
+        if algo == "ed25519" and isinstance(public_key, ed25519.Ed25519PublicKey):
+            public_key.verify(signature, content)
+        elif algo == "rsa-sha256" and isinstance(public_key, rsa.RSAPublicKey):
+            public_key.verify(signature, content, padding.PKCS1v15(), hashes.SHA256())
+        elif algo == "ecdsa-p256" and isinstance(public_key, ec.EllipticCurvePublicKey):
+            if public_key.curve.name.lower() != "secp256r1":
+                return False
+            public_key.verify(signature, content, ec.ECDSA(hashes.SHA256()))
+        else:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _count_trusted_valid_signatures(bundle: dict, trusted_fingerprints, trusted_keys) -> int:
+    """Count asymmetric signatures that are BOTH cryptographically valid over the
+    canonical payload AND trusted. Trust = the signer key's RECOMPUTED fingerprint
+    is allow-listed (embedded-key path) OR its key_id is in trusted_keys (external
+    path, verified against the CALLER's key). HMAC never counts (shared secret)."""
+    sigs = bundle.get("signatures") or []
+    # Fail closed on malformed input: a non-list signatures value, or non-dict
+    # elements, must mean "no trusted signatures", never a crash (red-team nit).
+    if not isinstance(sigs, list) or not sigs:
+        return 0
+    if len(sigs) > 1000:        # absurd count -> fail closed (DoS guard)
+        return 0
+    content = canonical_json_dumps(
+        {k: v for k, v in bundle.items() if k != "signatures"}).encode("utf-8")
+    tf = set(trusted_fingerprints or [])
+    tk = dict(trusted_keys or {})
+    # Trust is checked (cheap) BEFORE the expensive crypto verify, and we
+    # short-circuit on the first trusted+valid signature -- so junk/untrusted
+    # signatures (any order, up to the cap) cannot starve a real one.
+    for sig in sigs:
+        if not isinstance(sig, dict):
+            continue
+        if sig.get("algorithm") not in ("ed25519", "rsa-sha256", "ecdsa-p256"):
+            continue  # hmac / unknown: not anti-forgery
+        sigval = sig.get("signature_value")
+        if not sigval:
+            continue
+        key_id = sig.get("public_key_id")
+        # External trust: caller explicitly supplied this key_id -> use THEIR key
+        # (an attacker's embedded key is ignored on this path).
+        if key_id and key_id in tk:
+            key_source, trusted = tk[key_id], True
+        elif sig.get("public_key"):
+            key_source, trusted = sig["public_key"], False  # embedded: must pin below
+        else:
+            continue
+        try:
+            pub, der = _load_public_key_der(key_source)
+        except Exception:
+            continue
+        # Recompute fingerprint from the ACTUAL key bytes -- never trust the claimed
+        # public_key_id field (defeats key_id spoofing).
+        if not trusted:
+            if ("sha256:" + hashlib.sha256(der).hexdigest()) not in tf:
+                continue
+        try:
+            sigbytes = b64decode(sigval, validate=True)
+        except Exception:
+            continue
+        if _verify_asym(sig.get("algorithm"), pub, sigbytes, content):
+            return 1   # one trusted, valid signature is sufficient
+    return 0
+
+
+def verify_bundle_chain(
+    bundle: dict,
+    trusted_fingerprints=None,
+    trusted_keys: dict | None = None,
+    require_signature: bool = False,
+) -> tuple[bool, str]:
+    """
+    Verify a bundle. Two tiers:
+      * integrity (default): event chain + whole-bundle bundle_hash (tamper-EVIDENT).
+      * anti-forgery (opt-in): pass trusted_fingerprints (allow-listed "sha256:..."
+        of producer public keys), and/or trusted_keys ({key_id: PEM}), and/or
+        require_signature=True. The bundle then needs >=1 asymmetric signature that
+        is cryptographically valid over canonical_json(bundle - signatures) AND
+        trusted (signer fingerprint allow-listed, or key_id in trusted_keys). HMAC
+        is never anti-forgery.
+
+    Returns: (is_valid, message)
     """
     events = bundle.get("events", [])
     if not events:
@@ -481,5 +640,45 @@ def verify_bundle_chain(bundle: dict) -> tuple[bool, str]:
     final_hash = bundle.get("hash_chain", {}).get("final_hash", "")
     if previous_hash != final_hash:
         return False, f"Final hash mismatch: expected {final_hash}, got {previous_hash}"
+
+    # Whole-bundle seal. A MODERN bundle (declares a 0.2.x version/spec, or carries
+    # items/immutability_proof) MUST be sealed with bundle_hash -- refusing the
+    # event-only fallback closes the downgrade bypass (strip bundle_hash AND
+    # immutability_proof). Only a bundle with NONE of those modern markers is treated
+    # as genuinely legacy and verified on the event chain alone.
+    expected_bundle_hash = bundle.get("bundle_hash")
+    # A bundle carrying ANY field that bundle_hash is meant to protect MUST be
+    # sealed. You cannot keep a forgeable rich field (summary, analysis_snapshot,
+    # items, ...) without bundle_hash -- so stripping every version/items marker
+    # does not buy a downgrade as long as the forged field itself is present. Only
+    # a bare event-only legacy bundle (none of these fields) verifies on the event
+    # chain alone.
+    _rich = ("items", "immutability_proof", "summary", "analysis_snapshot",
+             "context", "sanitization")
+    requires_seal = (
+        str(bundle.get("version", "")).startswith("0.2")
+        or str(bundle.get("guardspine_spec_version", "")).startswith("0.2")
+        or any(f in bundle for f in _rich)   # PRESENCE, not truthiness: a present-but-empty rich field still requires the seal
+    )
+    if requires_seal and not expected_bundle_hash:
+        return False, "missing bundle_hash: a sealed-class bundle is not sealed (downgrade)"
+    if expected_bundle_hash:
+        recomputed = BundleGenerator._compute_bundle_hash(bundle)
+        if recomputed != expected_bundle_hash:
+            return False, (
+                "bundle_hash mismatch: a top-level field was altered "
+                f"(expected {expected_bundle_hash}, got {recomputed})"
+            )
+
+    # Anti-forgery tier: any trust anchor (trusted_fingerprints/trusted_keys) OR
+    # require_signature activates the signature gate -- the bundle then needs >=1
+    # cryptographically valid signature from a trusted key.
+    if require_signature or trusted_fingerprints or trusted_keys:
+        if _count_trusted_valid_signatures(
+                bundle, trusted_fingerprints, trusted_keys) == 0:
+            return False, (
+                "no valid signature from a trusted key "
+                "(absent, untrusted, forged, or HMAC-only)"
+            )
 
     return True, "Hash chain verified successfully"
