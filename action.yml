@@ -39,6 +39,10 @@ inputs:
     description: 'Fail the check if risk exceeds threshold'
     required: false
     default: 'false'
+  fail_on_dashboard_sync_error:
+    description: 'Fail the run if the evidence bundle cannot be synced and verified to the GuardSpine backend. Default true so a swallowed sync failure cannot ship as a green check.'
+    required: false
+    default: 'true'
   openai_api_key:
     description: 'OpenAI API key for AI-powered analysis (optional)'
     required: false
@@ -188,6 +192,7 @@ runs:
     INPUT_ATTESTATION_KEY: ${{ inputs.attestation_key }}
     INPUT_UPLOAD_SARIF: ${{ inputs.upload_sarif }}
     INPUT_FAIL_ON_HIGH_RISK: ${{ inputs.fail_on_high_risk }}
+    INPUT_FAIL_ON_DASHBOARD_SYNC_ERROR: ${{ inputs.fail_on_dashboard_sync_error }}
     INPUT_OPENAI_API_KEY: ${{ inputs.openai_api_key }}
     INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
     INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}

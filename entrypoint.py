@@ -173,8 +173,14 @@ def _record_sanitization_stage(
     return summary
 
 
-def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict) -> bool:
-    """POST JSON to the GuardSpine backend. Returns True on success."""
+def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict):
+    """POST JSON to the GuardSpine backend.
+
+    Returns the parsed response dict on a 2xx (``{}`` if the body is empty/not
+    JSON), or ``None`` on any failure (HTTP error, unreachable, exception).
+    Callers get the response so they can check ``verified``; ``None`` is an
+    unambiguous "the evidence did not land" signal (see ``_bundle_sync_failed``).
+    """
     url = api_url.rstrip("/") + path
     body = json.dumps(payload, default=str).encode("utf-8")
     req = urllib.request.Request(
@@ -188,8 +194,12 @@ def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict) -> bo
     )
     try:
         resp = urllib.request.urlopen(req, timeout=15)
-        resp.read()
-        return True
+        raw = resp.read()
+        try:
+            parsed = json.loads(raw.decode("utf-8")) if raw else {}
+        except (ValueError, UnicodeDecodeError):
+            parsed = {}
+        return parsed if isinstance(parsed, dict) else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")[:200]
         print(f"::warning::GuardSpine backend POST {path} failed ({exc.code}): {detail}")
@@ -197,7 +207,19 @@ def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict) -> bo
         print(f"::warning::GuardSpine backend unreachable ({path}): {exc.reason}")
     except Exception as exc:
         print(f"::warning::GuardSpine backend POST {path} error: {exc}")
-    return False
+    return None
+
+
+def _bundle_sync_failed(import_result) -> bool:
+    """Did the evidence bundle fail to durably land + verify in the backend?
+
+    ``import_result`` is what ``_post_to_backend("/bundles/import", ...)``
+    returned. STRICT: only an explicit ``verified: True`` counts as success.
+    The backend contract guarantees a 2xx carries ``verified`` (unverified
+    imports are rejected 422), so anything else -- ``None``, missing field,
+    ``null``, ``0``, ``"false"`` -- means the evidence did not provably land.
+    """
+    return not (isinstance(import_result, dict) and import_result.get("verified") is True)
 
 
 def main():
@@ -213,6 +235,10 @@ def main():
     generate_bundle = parse_bool(get_env("INPUT_GENERATE_BUNDLE", "true"))
     upload_sarif = parse_bool(get_env("INPUT_UPLOAD_SARIF", "false"))
     fail_on_high_risk = parse_bool(get_env("INPUT_FAIL_ON_HIGH_RISK", "false"))
+    # Default true: a swallowed dashboard-sync failure means the governance
+    # record does not exist, so the run must not exit green (see final gate).
+    fail_on_dashboard_sync_error = parse_bool(get_env("INPUT_FAIL_ON_DASHBOARD_SYNC_ERROR", "true"))
+    dashboard_sync_failed = False
 
     # Optional AI API keys
     openai_key = get_env("INPUT_OPENAI_API_KEY") or get_env("OPENAI_API_KEY")
@@ -646,10 +672,17 @@ def main():
         print("guardspine_api_key set: ", guardspine_api_key and len(guardspine_api_key))
         # Sync bundle to GuardSpine dashboard
         if guardspine_api_url and guardspine_api_key:
-            if _post_to_backend(guardspine_api_url, guardspine_api_key, "/bundles/import", bundle):
-                print(f"Bundle synced to GuardSpine dashboard")
-            else:
+            import_result = _post_to_backend(guardspine_api_url, guardspine_api_key, "/bundles/import", bundle)
+            if _bundle_sync_failed(import_result):
+                dashboard_sync_failed = True
                 print("::warning::Bundle saved locally but dashboard sync failed")
+            else:
+                print(f"Bundle synced to GuardSpine dashboard")
+        elif guardspine_api_url or guardspine_api_key:
+            # Exactly one of url/key set: sync was intended but cannot happen.
+            # A silent skip here would defeat fail_on_dashboard_sync_error.
+            dashboard_sync_failed = True
+            print("::warning::GuardSpine sync misconfigured: set BOTH guardspine_api_url and guardspine_api_key")
 
         print("::endgroup::")
 
@@ -711,7 +744,7 @@ def main():
             ),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        if _post_to_backend(guardspine_api_url, guardspine_api_key, "/approvals", approval_payload):
+        if _post_to_backend(guardspine_api_url, guardspine_api_key, "/approvals", approval_payload) is not None:
             print("Approval record synced to GuardSpine")
 
     # Determine exit status (decision engine is authoritative)
@@ -729,8 +762,25 @@ def main():
     else:
         print(f"::notice::Decision Engine: MERGE - clean to merge (risk tier {risk_tier})")
         if auto_merge and risk_tier != "L4":
-            bundle_id = bundle["bundle_id"] if generate_bundle and bundle_path else "none"
-            _auto_merge(pr, auto_merge_method, risk_tier, bundle_id)
+            if fail_on_dashboard_sync_error and dashboard_sync_failed:
+                # Do not merge a PR whose governance record never landed; the
+                # fatal gate below will fail this run.
+                print("::warning::Skipping auto-merge: dashboard sync failed")
+            else:
+                bundle_id = bundle["bundle_id"] if generate_bundle and bundle_path else "none"
+                _auto_merge(pr, auto_merge_method, risk_tier, bundle_id)
+
+    # Evidence must durably land. A swallowed sync failure means the governance
+    # record does not exist, so a would-be-green run must fail instead (a block
+    # already exited 1 above with its own message). Escape hatch:
+    # fail_on_dashboard_sync_error: false.
+    if fail_on_dashboard_sync_error and dashboard_sync_failed:
+        print(
+            "::error::GuardSpine dashboard sync failed; the evidence bundle was not "
+            "recorded (see warnings above). Set fail_on_dashboard_sync_error: false "
+            "to make dashboard sync non-fatal."
+        )
+        sys.exit(1)
 
     sys.exit(0)
 
