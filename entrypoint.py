@@ -15,6 +15,7 @@ import sys
 import hashlib
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -173,6 +174,37 @@ def _record_sanitization_stage(
     return summary
 
 
+class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    """Drop the Authorization header if a redirect crosses origin.
+
+    urllib's default redirect handler re-sends every header -- including the
+    Bearer API key -- to the redirect target, even a different host. A
+    backend/CDN redirect could therefore forward the production key to an
+    arbitrary origin. Same-origin redirects (scheme+host+port unchanged) keep
+    working; a cross-origin redirect gets the request WITHOUT the credential.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None:
+            def _origin(u):
+                s = urllib.parse.urlsplit(u)
+                # Normalize the default port so https://h and https://h:443 are
+                # the SAME origin (a redirect that only makes the default port
+                # explicit must not spuriously strip auth).
+                port = s.port or {"https": 443, "http": 80}.get(s.scheme)
+                return (s.scheme, s.hostname, port)
+
+            if _origin(req.full_url) != _origin(newurl):
+                for store in (getattr(new, "headers", {}), getattr(new, "unredirected_hdrs", {})):
+                    for k in [h for h in store if h.lower() == "authorization"]:
+                        store.pop(k, None)
+        return new
+
+
+_ORIGIN_SAFE_OPENER = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+
+
 def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict):
     """POST JSON to the GuardSpine backend.
 
@@ -193,7 +225,7 @@ def _post_to_backend(api_url: str, api_key: str, path: str, payload: dict):
         method="POST",
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=15)
+        resp = _ORIGIN_SAFE_OPENER.open(req, timeout=15)
         raw = resp.read()
         try:
             parsed = json.loads(raw.decode("utf-8")) if raw else {}
@@ -602,6 +634,19 @@ def main():
         # a bad key fails loud rather than silently producing a non-anti-forgery MAC.
         attestation_key = (get_env("INPUT_ATTESTATION_KEY", "")
                            or os.environ.get("GUARDSPINE_ATTESTATION_KEY", "")) or None
+        # Overrides the emitted signature.public_key_id (default: a fingerprint
+        # of the DER-encoded public key). Set this when the verifier (e.g. the
+        # GuardSpine backend) trusts a fixed, pre-configured key_id string
+        # instead -- see BundleGenerator._sign_bundle for the exact contract.
+        attestation_key_id = get_env("INPUT_ATTESTATION_KEY_ID", "") or None
+        # Extra entropy folded into the bundle_id seed only (commit_sha/context
+        # stay real everywhere else). Plain env var, not a formal action input,
+        # the same way STUB_DIFF_PATH/PYTHONPATH are CI-only hooks -- a run with
+        # no real PR (e.g. workflow_dispatch) otherwise always resolves the same
+        # repository/pr_number/commit_sha, so every run mints the identical
+        # bundle_id and a backend that rejects duplicate imports (409) refuses
+        # every run after the first. See BundleGenerator._generate_bundle_id.
+        bundle_id_nonce = os.environ.get("GUARDSPINE_BUNDLE_NONCE", "")
         if sanitization_summary:
             analysis["sanitization"] = dict(sanitization_summary)
         bundle = generator.create_bundle(
@@ -611,6 +656,8 @@ def main():
             repository=github_repository,
             commit_sha=github_sha,
             attestation_key=attestation_key,
+            attestation_key_id=attestation_key_id,
+            id_nonce=bundle_id_nonce,
         )
 
         if sanitization_summary:
@@ -646,7 +693,7 @@ def main():
         # optional PII redaction above); re-seal so bundle_hash matches the FINAL
         # saved bytes -- and RE-SIGN with the same key so a signed artifact stays
         # signed (seal_bundle refuses to silently drop a signature).
-        generator.seal_bundle(bundle, attestation_key=attestation_key)
+        generator.seal_bundle(bundle, attestation_key=attestation_key, attestation_key_id=attestation_key_id)
 
         # Save bundle
         bundle_dir.mkdir(parents=True, exist_ok=True)

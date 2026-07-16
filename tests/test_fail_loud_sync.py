@@ -38,7 +38,7 @@ class _Resp:
 
 def test_post_to_backend_returns_parsed_body_on_2xx(monkeypatch):
     monkeypatch.setattr(
-        entrypoint.urllib.request, "urlopen",
+        entrypoint._ORIGIN_SAFE_OPENER, "open",
         lambda *a, **k: _Resp(b'{"verified": true, "bundle_id": "b-1"}'),
     )
     result = entrypoint._post_to_backend("https://api.x", "k", "/bundles/import", {})
@@ -49,7 +49,7 @@ def test_post_to_backend_returns_parsed_body_on_2xx(monkeypatch):
 def test_post_to_backend_signals_failure_on_http_error(monkeypatch):
     def _raise(*a, **k):
         raise _http_error(422)
-    monkeypatch.setattr(entrypoint.urllib.request, "urlopen", _raise)
+    monkeypatch.setattr(entrypoint._ORIGIN_SAFE_OPENER, "open", _raise)
     result = entrypoint._post_to_backend("https://api.x", "k", "/bundles/import", {})
     assert result is None  # a swallowed False is not enough; failure must be unambiguous
 
