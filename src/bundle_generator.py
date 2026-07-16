@@ -80,7 +80,9 @@ class BundleGenerator:
         commit_sha: str,
         approvers: list[str] = None,
         attestation_key: Optional[str] = None,
+        attestation_key_id: Optional[str] = None,
         allow_insecure_signature_fallback: bool = False,
+        id_nonce: str = "",
     ) -> dict[str, Any]:
         """
         Create a complete evidence bundle for a PR.
@@ -93,11 +95,27 @@ class BundleGenerator:
             commit_sha: Commit SHA being analyzed
             approvers: List of approver usernames (optional)
             attestation_key: Private key for signing (optional)
+            attestation_key_id: Overrides the signature's public_key_id (optional).
+                Default (unset) embeds the sha256 fingerprint of the DER-encoded
+                public key, which a verifier can only trust if it independently
+                recomputes that same fingerprint as a key_id. Set this when a
+                verifier (e.g. the GuardSpine backend) trusts a fixed, configured
+                key_id string instead -- the emitted signature.public_key_id
+                becomes exactly this value so it can be looked up verbatim.
+            id_nonce: Optional extra entropy folded into the bundle_id seed
+                (repository/pr_number/commit_sha stays the identity; the nonce
+                is appended). Without it, bundle_id is a pure function of those
+                three fields -- two runs against the same repo/PR/commit (e.g.
+                repeated workflow_dispatch runs with no real PR) mint the SAME
+                bundle_id, which a backend that rejects duplicate imports (409)
+                will refuse on the second run. Pass a run-scoped value (e.g. a
+                CI run id) to make each run's bundle_id unique while leaving
+                commit_sha/context untouched.
 
         Returns:
             Complete evidence bundle as dict
         """
-        bundle_id = self._generate_bundle_id(repository, pr.number, commit_sha)
+        bundle_id = self._generate_bundle_id(repository, pr.number, commit_sha, id_nonce=id_nonce)
         created_at = datetime.now(timezone.utc).isoformat()
 
         # Build event chain
@@ -251,6 +269,7 @@ class BundleGenerator:
         self.seal_bundle(
             bundle,
             attestation_key=attestation_key,
+            attestation_key_id=attestation_key_id,
             allow_insecure_signature_fallback=allow_insecure_signature_fallback,
         )
         return bundle
@@ -259,6 +278,7 @@ class BundleGenerator:
         self,
         bundle: dict,
         attestation_key: str | None = None,
+        attestation_key_id: str | None = None,
         allow_insecure_signature_fallback: bool = False,
         strip_signatures: bool = False,
     ) -> dict:
@@ -290,6 +310,7 @@ class BundleGenerator:
                 self._sign_bundle(
                     bundle,
                     attestation_key,
+                    attestation_key_id=attestation_key_id,
                     allow_insecure_fallback=allow_insecure_signature_fallback,
                 )
             )
@@ -308,9 +329,29 @@ class BundleGenerator:
         canonical = canonical_json_dumps(payload).encode("utf-8")
         return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
-    def _generate_bundle_id(self, repository: str, pr_number: int, commit_sha: str) -> str:
-        """Generate a deterministic UUID v5 bundle ID from inputs."""
-        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{repository}/pull/{pr_number}/{commit_sha}"))
+    def _generate_bundle_id(
+        self,
+        repository: str,
+        pr_number: int,
+        commit_sha: str,
+        id_nonce: str = "",
+    ) -> str:
+        """Generate a deterministic UUID v5 bundle ID from inputs.
+
+        Pure function of (repository, pr_number, commit_sha) by default -- two
+        calls with the same three values always mint the same bundle_id. That
+        is correct for real PRs (one bundle identity per PR+commit) but wrong
+        for a run with no real PR (e.g. workflow_dispatch), where those three
+        values are constant across runs and a backend that rejects duplicate
+        bundle_id imports (409) would refuse every run after the first.
+        id_nonce, when non-empty, is folded into the seed so such runs mint a
+        distinct bundle_id per invocation while commit_sha/context stay the
+        real, unmodified value everywhere else in the bundle.
+        """
+        seed = f"{repository}/pull/{pr_number}/{commit_sha}"
+        if id_nonce:
+            seed = f"{seed}/{id_nonce}"
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, seed))
 
     def _event_to_dict(self, event: BundleEvent) -> dict:
         """Convert BundleEvent to dict."""
@@ -407,6 +448,7 @@ class BundleGenerator:
         self,
         bundle: dict,
         private_key: str,
+        attestation_key_id: str | None = None,
         allow_insecure_fallback: bool = False,
     ) -> dict:
         """
@@ -414,6 +456,12 @@ class BundleGenerator:
 
         Supports PEM-encoded Ed25519, RSA, or EC keys when cryptography is
         available. Falls back to HMAC-SHA256 if cryptography is unavailable.
+
+        attestation_key_id, when set, overrides the emitted signature's
+        public_key_id (default: "sha256:<fingerprint of the DER-encoded
+        public key>"). A verifier that trusts a fixed, pre-configured key_id
+        string (rather than recomputing the fingerprint of an embedded key)
+        needs the signature to carry exactly that string.
         """
         signed_at = datetime.now(timezone.utc).isoformat()
         signature_id = str(uuid.uuid4())
@@ -462,6 +510,7 @@ class BundleGenerator:
                 encoding=serialization.Encoding.PEM,
                 format=serialization.PublicFormat.SubjectPublicKeyInfo,
             ).decode()
+            public_key_id = attestation_key_id if attestation_key_id else f"sha256:{public_fingerprint}"
 
             return {
                 "signature_id": signature_id,
@@ -469,7 +518,7 @@ class BundleGenerator:
                 "signer_id": signer_id,
                 "signature_value": signature_value,
                 "signed_at": signed_at,
-                "public_key_id": f"sha256:{public_fingerprint}",
+                "public_key_id": public_key_id,
                 # Embed the public key so bundles are self-contained: a verifier
                 # can check the signature AND pin the fingerprint without a side
                 # channel. Trust still requires the fingerprint to be allow-listed

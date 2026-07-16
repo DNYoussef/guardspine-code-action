@@ -31,6 +31,10 @@ inputs:
     description: 'PEM private key (Ed25519/RSA/EC) to sign evidence bundles for anti-forgery. When set, bundles are cryptographically signed so auditors can verify offline against your trusted public key. Leave empty for unsigned, integrity-only (tamper-evident) bundles. Provide via a GitHub secret.'
     required: false
     default: ''
+  attestation_key_id:
+    description: 'Overrides the signed bundle signature public_key_id (default: sha256 fingerprint of the DER-encoded public key). Set this to the exact key_id string your verifier has pre-configured for this signing key (e.g. GuardSpine backend GUARDSPINE_TRUSTED_PUBLIC_KEYS), so the signature is looked up verbatim instead of by recomputed fingerprint. Only meaningful when attestation_key is set.'
+    required: false
+    default: ''
   upload_sarif:
     description: 'Upload findings to GitHub Security tab (SARIF)'
     required: false
@@ -190,6 +194,7 @@ runs:
     INPUT_POST_COMMENT: ${{ inputs.post_comment }}
     INPUT_GENERATE_BUNDLE: ${{ inputs.generate_bundle }}
     INPUT_ATTESTATION_KEY: ${{ inputs.attestation_key }}
+    INPUT_ATTESTATION_KEY_ID: ${{ inputs.attestation_key_id }}
     INPUT_UPLOAD_SARIF: ${{ inputs.upload_sarif }}
     INPUT_FAIL_ON_HIGH_RISK: ${{ inputs.fail_on_high_risk }}
     INPUT_FAIL_ON_DASHBOARD_SYNC_ERROR: ${{ inputs.fail_on_dashboard_sync_error }}

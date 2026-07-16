@@ -74,15 +74,24 @@ def canonicalize_for_json(value: Any) -> Any:
 
 
 def canonical_json_dumps(value: Any) -> str:
-    """Serialize a value as canonical JSON."""
+    """Serialize a value as canonical JSON.
+
+    The FINAL serialization is delegated to guardspine-kernel's RFC 8785
+    canonicalizer -- the exact same implementation the GuardSpine backend uses
+    to re-verify a bundle's hash chain and signature on import. Python's
+    json.dumps diverges from RFC 8785 on numbers (e.g. a float 1.0 serializes
+    as "1.0" instead of "1"), so a bundle carrying an AI-emitted float score
+    would hash/sign differently on the action side than the backend recomputes,
+    and the backend would reject the import (422). Delegating here keeps the
+    two sides byte-identical for every value type, not just the no-float case.
+    canonicalize_for_json still runs first to reduce non-JSON Python types
+    (dataclasses, datetime, bytes, sets) to JSON-native values the kernel
+    canonicalizer accepts.
+    """
     normalized = canonicalize_for_json(value)
-    return json.dumps(
-        normalized,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    from guardspine_kernel.canonical import canonical_json as _kernel_canonical_json
+
+    return _kernel_canonical_json(normalized)
 
 
 def canonical_json_bytes(value: Any) -> bytes:

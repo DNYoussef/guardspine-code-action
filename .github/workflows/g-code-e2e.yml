@@ -1,0 +1,232 @@
+name: G-CODE-E2E (R0.6)
+
+# Proves the CodeGuard action -> GuardSpine dashboard bundle-sync loop end to
+# end, on a real GitHub runner, against prod (https://api.guardspine.ai).
+#
+# THIS IS THE GATE, NOT A DEMO:
+#   1. Run THIS repo's action (uses: ./ -- the exact code under review, not a
+#      pinned @v1 tag) with fail_on_dashboard_sync_error: true. If the
+#      dashboard sync 4xx/5xx's for any reason (Cloudflare 1010 included),
+#      entrypoint.py's _bundle_sync_failed() gate makes the action exit
+#      non-zero and this job goes RED right there. That non-zero exit IS the
+#      fail-first reproduction of the Cloudflare 1010 block -- no separate
+#      "expect failure" step is needed; a red run at the "Run CodeGuard"
+#      step, on this exact input set, before the Cloudflare fix ships, is
+#      the fail-first proof.
+#   2. Independently verify the freshly-emitted bundle OFFLINE: recompute its
+#      hash chain and cryptographically verify its Ed25519 signature with the
+#      CI attestation key (scripts/verify_local_bundle_signature.py). This is
+#      "verify its signature/hash chain" done by us, not just trusted from the
+#      backend's verified flag.
+#   3. Read the EXACT bundle_id the action just emitted back out of the backend
+#      (GET /bundles/import/{bundle_id}, same project API key) and assert
+#      verified == true, root_hash present, item_count > 0, and the id matches
+#      -- the ID-traceable "one exact verified bundle" proof.
+#   4. Capture branch-protection state as a SEPARATE evidence artifact, kept
+#      out of application/action code per the R0.6 plan.
+#
+# Overall job result: RED if the action's sync fails OR the offline/read-back
+# verify fails. GREEN only when exactly one signed, verified bundle lands and
+# reads back verified.
+#
+# Signing / trust (R0.6): the action signs the bundle with the CI Ed25519
+# attestation key (secret GUARDSPINE_ATTESTATION_KEY, a PEM private key) and
+# stamps signature.public_key_id = ATTESTATION_KEY_ID. The production backend
+# only marks an imported bundle verified when that key_id is in its
+# GUARDSPINE_TRUSTED_PUBLIC_KEYS allowlist, so an unsigned or untrusted bundle
+# is rejected 422 (-> action red). No insecure-fallback signature is allowed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      protected_branch:
+        description: 'Branch name to capture branch-protection evidence for'
+        required: false
+        default: 'main'
+  schedule:
+    # Weekly canary: catches a silent regression in the sync loop even when
+    # nobody happens to dispatch it by hand. Cheap -- one job, one PR-sized
+    # diff, on a public repo (free runner minutes, proven in R0.0).
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+# The production API base URL is HARDCODED, not a dispatch input: the job
+# hands GUARDSPINE_API_KEY to whatever URL it targets, so a free-form URL
+# input would let a dispatcher redirect the production key to an arbitrary
+# host (secret exfiltration). Only this exact origin ever receives the key.
+env:
+  GUARDSPINE_API_URL: 'https://api.guardspine.ai/api/v1'
+  ATTESTATION_KEY_ID: 'codeguard-ci-r06'
+
+jobs:
+  g-code-e2e:
+    name: Prove action -> dashboard bundle sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      # The offline verifier (scripts/verify_local_bundle_signature.py) runs on
+      # the RUNNER HOST, not inside the action's Docker image, so it needs the
+      # action's runtime deps installed here (setup-python only provisions the
+      # interpreter). Without this the host import of src.bundle_generator ->
+      # github/cryptography fails with ModuleNotFoundError and the job goes red
+      # for a reason unrelated to the sync loop under test.
+      - name: Install host deps for the offline verifier
+        run: python -m pip install --no-cache-dir -r requirements.txt
+
+      # --- 1. Run the LOCAL action against prod, fail-hard on sync failure ---
+      #
+      # There is no PR on a workflow_dispatch/schedule run, so entrypoint.py
+      # has no diff to fetch from the GitHub API. The action already ships a
+      # supported offline path for exactly this (entrypoint.py fetch_pr_diff):
+      # when STUB_DIFF_PATH is set, fetch_pr_diff() returns that file's
+      # contents directly instead of calling the GitHub API, and main()
+      # resolves pr_number=1 for a non-PR event as long as STUB_DIFF_PATH is
+      # set.
+      #
+      # PYTHONPATH points at tests/stubs (workspace-relative -- a docker
+      # container action's cwd is /github/workspace, not the image's /action;
+      # the sibling act-dryrun.yml uses /action/tests/stubs, a path absent from
+      # the built image, so it silently falls back to real PyGithub -- a latent
+      # bug there, out of scope, avoided here) so `from github import ...`
+      # resolves to the offline stubs and the run is hermetic on the GitHub
+      # side while still doing a REAL POST to the GuardSpine backend.
+      #
+      # GUARDSPINE_BUNDLE_NONCE makes each run's bundle_id unique. On a
+      # dispatch/schedule run repository/pr_number(1)/commit_sha are constant
+      # across runs, so without the nonce every run mints the identical
+      # bundle_id and the backend rejects the second import 409. The nonce is
+      # folded into the bundle_id SEED only; commit_sha/context stay real.
+      - name: Run CodeGuard (this repo's own action, against prod)
+        id: guard
+        uses: ./
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tests/stubs
+          STUB_DIFF_PATH: tests/fixtures/diff.patch
+          GUARDSPINE_BUNDLE_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+        with:
+          risk_threshold: L3
+          rubric: default
+          rubrics_dir: "."
+          github_token: ${{ github.token }}
+          post_comment: "false"
+          generate_bundle: "true"
+          bundle_dir: ".guardspine/bundles"
+          upload_sarif: "false"
+          fail_on_high_risk: "false"
+          fail_on_dashboard_sync_error: "true"
+          attestation_key: ${{ secrets.GUARDSPINE_ATTESTATION_KEY }}
+          attestation_key_id: ${{ env.ATTESTATION_KEY_ID }}
+          guardspine_api_url: ${{ env.GUARDSPINE_API_URL }}
+          guardspine_api_key: ${{ secrets.GUARDSPINE_API_KEY }}
+
+      - name: Report emitted bundle
+        if: always()
+        run: |
+          echo "risk_tier: ${{ steps.guard.outputs.risk_tier }}"
+          echo "decision: ${{ steps.guard.outputs.decision }}"
+          echo "bundle_id: ${{ steps.guard.outputs.bundle_id }}"
+          echo "bundle_path: ${{ steps.guard.outputs.bundle_path }}"
+
+      # --- 2. Independent OFFLINE verification of the exact emitted bundle ---
+      #
+      # Recompute the hash chain AND cryptographically verify the Ed25519
+      # signature with the CI attestation key. This proves the action produced
+      # a self-consistent, correctly-signed bundle under the CI key BEFORE any
+      # backend trust is involved -- so a green run cannot merely mean "the
+      # backend said ok". Fails the job on any mismatch.
+      - name: Verify emitted bundle offline (hash chain + CI signature)
+        env:
+          GUARDSPINE_ATTESTATION_KEY: ${{ secrets.GUARDSPINE_ATTESTATION_KEY }}
+        run: |
+          python scripts/verify_local_bundle_signature.py \
+            "${{ steps.guard.outputs.bundle_path }}" \
+            "${ATTESTATION_KEY_ID}"
+
+      # --- 3. Read back the EXACT bundle by id and assert it verified ---
+      #
+      # scripts/g_code_e2e_verify.py GETs /bundles/import/{bundle_id} with the
+      # SAME project API key used for the import, and asserts HTTP 200,
+      # verified == true, root_hash present, item_count > 0, and that the
+      # bundle_id it read back is the exact one the action emitted above.
+      - name: Read back and verify the exact dashboard bundle
+        env:
+          GUARDSPINE_API_KEY: ${{ secrets.GUARDSPINE_API_KEY }}
+        run: |
+          python scripts/g_code_e2e_verify.py \
+            "${GUARDSPINE_API_URL}" \
+            "${{ steps.guard.outputs.bundle_id }}"
+
+      # --- 4. Branch-protection evidence (separate from action/app code) ---
+      #
+      # Kept as its own step and its own artifact, deliberately not folded into
+      # the CodeGuard scan/bundle steps above -- the R0.6 plan requires this
+      # evidence to be recorded separately from application code. The default
+      # GITHUB_TOKEN often lacks repo-admin scope to read branch protection, so
+      # a 403/404 here is expected and handled gracefully rather than failing
+      # the job -- the point is to RECORD the observed state, not require it.
+      - name: Capture branch-protection evidence (separate from app/action code)
+        id: branch_protection
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ inputs.protected_branch || 'main' }}
+        run: |
+          set -u
+          url="https://api.github.com/repos/${{ github.repository }}/branches/${BRANCH}/protection"
+          status=$(curl -s -o branch-protection.json -w "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$url")
+          echo "GET $url -> HTTP $status"
+          case "$status" in
+            200)
+              echo "note: branch-protection state captured for '${BRANCH}'" ;;
+            404)
+              echo "note: HTTP 404 -- branch not found or no protection configured for '${BRANCH}'" ;;
+            403)
+              echo "note: HTTP 403 -- github.token lacks scope to read branch protection (expected for the default GITHUB_TOKEN without repo-admin rights); this is a token-scope limitation, not a gate failure" ;;
+            *)
+              echo "note: unexpected HTTP $status reading branch protection" ;;
+          esac
+          {
+            echo "{"
+            echo "  \"repository\": \"${{ github.repository }}\","
+            echo "  \"branch\": \"${BRANCH}\","
+            echo "  \"http_status\": ${status},"
+            echo "  \"captured_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+            echo "}"
+          } > branch-protection-meta.json
+          cat branch-protection-meta.json
+
+      - name: Upload branch-protection evidence artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: branch-protection-evidence
+          path: |
+            branch-protection.json
+            branch-protection-meta.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      # The bundle lives under a dot-directory (.guardspine/bundles); by
+      # default upload-artifact skips hidden files, so include-hidden-files is
+      # required or the artifact would be empty. if-no-files-found: error makes
+      # a missing bundle FAIL the gate rather than silently pass green.
+      - name: Upload evidence bundle artifact
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: g-code-e2e-bundle
+          path: .guardspine/bundles/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90

@@ -43,6 +43,26 @@ class TestCanonicalJson(unittest.TestCase):
         with self.assertRaises(ValueError):
             canonical_json_dumps({"score": float("nan")})
 
+    def test_matches_guardspine_kernel_for_floats(self):
+        """R0.6 float contract: canonical_json_dumps MUST be byte-identical to
+        the guardspine-kernel RFC 8785 canonicalizer the backend re-verifies
+        with. Python's json.dumps renders a float 1.0 as "1.0" while RFC 8785
+        renders "1", so a revert to json.dumps here would leave local signing
+        tests green but make the backend reject any float-bearing (AI-scored)
+        bundle at import (422). Guard that exact regression."""
+        from guardspine_kernel.canonical import canonical_json as kernel_canonical_json
+
+        for obj in (
+            {"score": 1.0, "z": 0.0, "half": 1.5},
+            {"nested": {"weights": [1.0, 2.5, 0.0]}},
+            {"a": 1, "b": "x", "c": [1, 2]},  # no-float case stays identical too
+        ):
+            self.assertEqual(
+                canonical_json_dumps(obj),
+                kernel_canonical_json(obj),
+                f"canonical divergence from kernel for {obj!r}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
