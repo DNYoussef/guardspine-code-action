@@ -261,7 +261,12 @@ def main():
     if risk_threshold not in ("L0", "L1", "L2", "L3", "L4"):
         print(f"::error::Invalid risk_threshold '{risk_threshold}'. Must be one of: L0, L1, L2, L3, L4")
         sys.exit(1)
-    rubric = get_env("INPUT_RUBRIC", "default")
+    # "" = unset -> the repo's .guardspine/config.yml rubric_packs list applies.
+    # Any explicit value (including "default") overrides that list. Resolved to
+    # "default" only after the distinction has been captured.
+    rubric_input = get_env("INPUT_RUBRIC", "").strip()
+    rubric_explicit = bool(rubric_input)
+    rubric = rubric_input or "default"
     github_token = get_env("INPUT_GITHUB_TOKEN")
     post_comment = parse_bool(get_env("INPUT_POST_COMMENT", "true"))
     generate_bundle = parse_bool(get_env("INPUT_GENERATE_BUNDLE", "true"))
@@ -517,6 +522,7 @@ def main():
             rubric_path=rubric_path,
             policy_path=risk_policy_path,
             repo_root=workspace,
+            rubric_explicit=rubric_explicit,
         )
     except Exception as exc:
         print(f"::error::Failed to load rubric/policy: {exc}")
