@@ -283,9 +283,8 @@ def test_gd_pr_cannot_supply_its_own_pack_file(tmp_path):
     assert rc.rubric_rules, "fell through to zero enforcement"
 
 
-def test_gd_pr_cannot_shadow_a_shipped_pack(tmp_path):
-    """A PR dropping its own rubrics/builtin/hipaa-safeguards.yaml must not
-    replace the real pack -- discover_builtin_rubrics() scans repo dirs first."""
+def _shadow_repo(tmp_path: Path) -> Path:
+    """A PR that commits its own copy of a SHIPPED pack name, neutered."""
     shadow_dir = tmp_path / "rubrics" / "builtin"
     shadow_dir.mkdir(parents=True)
     (shadow_dir / "hipaa-safeguards.yaml").write_text(yaml.dump({
@@ -293,11 +292,42 @@ def test_gd_pr_cannot_shadow_a_shipped_pack(tmp_path):
         "rules": [{"id": "FAKE-1", "severity": "info", "description": "neutered",
                    "patterns": ["zzzz_never_occurs_zzzz"]}],
     }), encoding="utf-8")
+    return tmp_path
 
-    rc = RiskClassifier(repo_root=tmp_path, config_packs=_packs("hipaa-safeguards"))
+
+def test_gd_pr_cannot_shadow_a_shipped_pack_via_config(tmp_path):
+    rc = RiskClassifier(repo_root=_shadow_repo(tmp_path),
+                        config_packs=_packs("hipaa-safeguards"))
     ids = {r["id"] for r in rc.rubric_rules}
     assert "FAKE-1" not in ids, "a PR shadowed a shipped pack"
     assert any(i.startswith("HIPAA-") for i in ids), "real HIPAA pack did not load"
+
+
+def test_gd_pr_cannot_shadow_a_shipped_pack_via_explicit_rubric(tmp_path):
+    """The config path was guarded first, but the EXPLICIT `rubric:` path
+    resolved through discover_builtin_rubrics(), which searched repo dirs before
+    shipped ones and kept the first match. Reproduced: `rubric: hipaa` loaded
+    only the PR's NOOP rule. Shipped must win for every resolution path."""
+    repo = _shadow_repo(tmp_path)
+    builtins = RiskClassifier.discover_builtin_rubrics(repo)
+    rc = RiskClassifier(rubric="hipaa", rubric_path=builtins["hipaa"],
+                        repo_root=repo, rubric_explicit=True)
+    ids = {r["id"] for r in rc.rubric_rules}
+    assert "FAKE-1" not in ids, "explicit rubric: loaded a PR-shadowed pack"
+    assert any(i.startswith("HIPAA-") for i in ids), "real HIPAA pack did not load"
+
+
+def test_gd_repo_may_still_add_its_own_uniquely_named_rubric(tmp_path):
+    """Shipped-wins must not stop a repo adding rubrics of its own; it only
+    stops a repo taking over a name the Action ships."""
+    d = tmp_path / "rubrics" / "builtin"
+    d.mkdir(parents=True)
+    (d / "myteam.yaml").write_text(yaml.dump({
+        "name": "myteam",
+        "rules": [{"id": "MINE-1", "severity": "low", "description": "x",
+                   "patterns": ["todo"]}],
+    }), encoding="utf-8")
+    assert "myteam" in RiskClassifier.discover_builtin_rubrics(tmp_path)
 
 
 @pytest.mark.parametrize("evil", ["../outside", "/etc/passwd", "../../secrets",

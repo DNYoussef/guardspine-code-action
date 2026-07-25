@@ -193,17 +193,29 @@ class RiskClassifier:
 
     @classmethod
     def _builtin_dir_candidates(cls, repo_root: Path | None) -> list[Path]:
-        """Return candidate directories for shipped built-in rubric YAML files."""
+        """Return candidate directories for built-in rubric YAML files.
+
+        SHIPPED FIRST, deliberately. discover_builtin_rubrics() keeps the first
+        match for a given stem, so whichever directory comes first wins. With
+        repo paths first, a PR could commit rubrics/builtin/hipaa-safeguards.yaml
+        containing one rule that matches nothing and an explicit `rubric: hipaa`
+        would load THAT instead of the real pack -- a PR neutering the control
+        that judges it (reproduced: only the PR's NOOP rule loaded).
+
+        Repo directories are still searched, so a repo can add rubrics of its
+        own; it simply cannot take over a name the Action ships.
+        """
         candidates: list[Path] = []
+
+        project_root = Path(__file__).resolve().parents[1]
+        candidates.append(project_root / "rubrics" / "builtin")
+
         if repo_root:
             candidates.extend([
                 repo_root / "rubrics" / "builtin",
                 repo_root / ".guardspine" / "rubrics" / "builtin",
                 repo_root / ".codeguard" / "rubrics" / "builtin",
             ])
-
-        project_root = Path(__file__).resolve().parents[1]
-        candidates.append(project_root / "rubrics" / "builtin")
 
         seen: set[Path] = set()
         unique: list[Path] = []
@@ -535,10 +547,16 @@ class RiskClassifier:
 
         Repo-local rubric files are intentionally NOT reachable from config:
         they live in the PR checkout, so honoring them would reintroduce the
-        "a PR picks its own policy" hole from the other direction. A repo that
-        wants a custom rubric points the `rubric:` input at it -- that input
-        comes from the workflow file, which GitHub runs from the BASE branch on
-        pull_request events, so it is not PR-controlled.
+        "a PR picks its own policy" hole from the other direction.
+
+        NOTE, and it is important: the `rubric:` input is NOT a trusted
+        alternative. On `pull_request` events GitHub runs the workflow file from
+        the PR's merge commit, so a PR can edit `rubric:` -- or the whole
+        workflow -- just as easily. An earlier version of this comment claimed
+        the workflow came from the base branch; that is false and was the wrong
+        basis for a security decision. The Action cannot defend its own
+        invocation; that requires branch protection plus backend-side checking
+        that the packs an org expects are the packs a scan actually reported.
         """
         return self.shipped_rubrics().get(pack)
 
