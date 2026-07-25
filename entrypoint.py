@@ -272,23 +272,38 @@ def _base_ref_config_packs(workspace: Path) -> list[str]:
     if not base_ref:
         return []  # not a pull_request event; nothing to compare against
 
+    failures: list[str] = []
     for ref in (f"origin/{base_ref}", base_ref):
         try:
             result = subprocess.run(
-                ["git", "show", f"{ref}:.guardspine/config.yml"],
+                # -c safe.directory: the action runs as root inside its
+                # container against a workspace owned by the runner user, so
+                # git refuses the repository as "dubious ownership" and every
+                # read fails. Verified live on v2.4.0: without this the
+                # base-ref lookup returned nothing and the scan fell back to
+                # the default pack, which is the failure this whole path
+                # exists to prevent. Read-only command against a checkout the
+                # runner already made; nothing further is being trusted.
+                ["git", "-c", f"safe.directory={workspace}", "show",
+                 f"{ref}:.guardspine/config.yml"],
                 cwd=str(workspace), capture_output=True, text=True, timeout=15,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError) as exc:
+            failures.append(f"{ref}: {exc}")
             continue
         if result.returncode == 0:
             packs = RiskClassifier.parse_config_packs(result.stdout)
             if packs:
                 print(f"Rubric packs (from base ref {ref}): {', '.join(packs)}")
             return packs
+        failures.append(f"{ref}: {result.stderr.strip() or f'exit {result.returncode}'}")
 
+    # Say WHY it failed. The first version of this warning did not, so a git
+    # ownership refusal was indistinguishable from a repo that has no config.
     print(
         "::warning::Could not read .guardspine/config.yml from the base ref; "
-        "ignoring rubric_packs (the PR's own copy is not trusted)"
+        "ignoring rubric_packs (the PR's own copy is not trusted). "
+        + " | ".join(failures)
     )
     return []
 

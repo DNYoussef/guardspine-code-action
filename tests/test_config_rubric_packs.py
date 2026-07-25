@@ -338,3 +338,97 @@ def test_gd_pack_names_cannot_escape(evil):
     assert rc.rubric_rules == [] or all(
         r["source_pack"] != evil for r in rc.rubric_rules
     ), f"pack name {evil!r} resolved to something"
+
+
+# --------------------------------------------------------------------------
+# GE - the base-ref read actually works inside the action's container
+#
+# The whole GD trust boundary is worthless if the read that enforces it fails
+# and falls back. It did: v2.4.0 shipped with no test over
+# _base_ref_config_packs at all, and on the first live PR git refused the
+# workspace ("dubious ownership" -- the action runs as root against a checkout
+# owned by the runner user), so the warning path swallowed it and every repo
+# scanned with the default pack. The scan looked clean and enforced the wrong
+# policy, which is the exact failure mode this product sells against.
+# --------------------------------------------------------------------------
+
+def _git(repo, *args):
+    import subprocess
+    subprocess.run(["git", *args], cwd=str(repo), check=True,
+                   capture_output=True, text=True)
+
+
+def _repo_with_config(tmp_path, packs, branch="main"):
+    repo = tmp_path / "repo"
+    (repo / ".guardspine").mkdir(parents=True)
+    _git(repo.parent, "init", "-q", "-b", branch, str(repo))
+    _git(repo, "config", "user.email", "t@example.test")
+    _git(repo, "config", "user.name", "t")
+    (repo / ".guardspine" / "config.yml").write_text(
+        yaml.dump({"api_url": "x", "rubric_packs": list(packs)}), encoding="utf-8",
+    )
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "config")
+    return repo
+
+
+def test_ge_packs_are_read_from_a_real_base_ref(tmp_path, monkeypatch):
+    from entrypoint import _base_ref_config_packs
+
+    repo = _repo_with_config(tmp_path, ["security", "dora"])
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    assert _base_ref_config_packs(repo) == ["security", "dora"]
+
+
+def test_ge_the_pr_copy_is_not_what_gets_read(tmp_path, monkeypatch):
+    """Same repo, but the working tree now says something else. The committed
+    base-ref copy is what counts."""
+    from entrypoint import _base_ref_config_packs
+
+    repo = _repo_with_config(tmp_path, ["security"])
+    (repo / ".guardspine" / "config.yml").write_text(
+        yaml.dump({"rubric_packs": ["attacker-pack"]}), encoding="utf-8",
+    )
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    assert _base_ref_config_packs(repo) == ["security"]
+
+
+def test_ge_git_is_told_the_workspace_is_safe(tmp_path, monkeypatch):
+    """Pins the specific fix. The ownership refusal cannot be reproduced
+    portably in a test -- it needs two uids -- so the flag that prevents it is
+    asserted directly."""
+    import subprocess
+    from entrypoint import _base_ref_config_packs
+
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 128, "", "fatal: dubious ownership")
+
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _base_ref_config_packs(Path("/github/workspace"))
+
+    assert seen, "git was never invoked"
+    for cmd in seen:
+        assert f"safe.directory={Path('/github/workspace')}" in cmd, (
+            f"git invoked without the workspace marked safe: {cmd}"
+        )
+
+
+def test_ge_a_failed_read_says_why(tmp_path, monkeypatch, capsys):
+    """A warning that cannot distinguish 'no config' from 'git refused' is how
+    this went unnoticed."""
+    import subprocess
+    from entrypoint import _base_ref_config_packs
+
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda cmd, **kw: subprocess.CompletedProcess(cmd, 128, "", "fatal: dubious ownership"),
+    )
+    assert _base_ref_config_packs(Path("/github/workspace")) == []
+    assert "dubious ownership" in capsys.readouterr().out
