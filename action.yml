@@ -12,9 +12,17 @@ inputs:
     required: false
     default: 'L3'
   rubric:
-    description: 'Policy rubric to evaluate against (soc2, hipaa, pci-dss, or path to custom rubric)'
+    description: >
+      Policy rubric to evaluate against (soc2, hipaa, pci-dss, or a path to a
+      custom rubric). Leave unset to use the rubric_packs list in the repo's
+      .guardspine/config.yml; setting any value here (including "default")
+      overrides that list.
     required: false
-    default: 'default'
+    # Empty, NOT 'default': the two must be distinguishable. With 'default' as
+    # the default, an omitted input and an explicit `rubric: default` arrive
+    # identically, so honoring config.yml for the former would silently change
+    # behavior for the latter.
+    default: ''
   github_token:
     description: 'GitHub token for PR operations'
     required: true
