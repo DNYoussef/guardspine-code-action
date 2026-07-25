@@ -154,6 +154,7 @@ class RiskClassifier:
         policy_path: str | Path | None = None,
         repo_root: str | Path | None = None,
         rubric_explicit: bool | None = None,
+        config_packs: list[str] | None = None,
     ):
         """Initialize classifier with rubric and optional policy overrides."""
         self.rubric = rubric
@@ -169,7 +170,13 @@ class RiskClassifier:
         # default.yaml so "was a path supplied?" cannot answer it either.
         if rubric_explicit is None:
             rubric_explicit = bool(rubric_path) or rubric != "default"
-        self.config_packs: list[str] = [] if rubric_explicit else self._config_rubric_packs()
+        # config_packs is supplied BY THE CALLER and must come from a source the
+        # PR author cannot edit (see entrypoint: it is read from the base ref).
+        # The classifier deliberately does not read .guardspine/config.yml from
+        # the workspace: actions/checkout gives us the PR head, so a PR could
+        # otherwise ship a one-rule pack that matches nothing, point the config
+        # at it, and be judged by a policy it wrote for itself.
+        self.config_packs: list[str] = [] if rubric_explicit else list(config_packs or [])
 
         if not self.rubric_path:
             self.rubric_path = self._resolve_rubric_path(rubric)
@@ -226,22 +233,22 @@ class RiskClassifier:
                 discovered.setdefault(alias, discovered[stem])
         return discovered
 
-    def _config_rubric_packs(self) -> list[str]:
-        """Read `rubric_packs:` from the repo's .guardspine/config.yml.
+    @classmethod
+    def parse_config_packs(cls, config_text: str) -> list[str]:
+        """Extract a normalized `rubric_packs` list from config.yml TEXT.
 
-        Returns [] for a repo with no config, an unreadable/invalid config, or
-        no pack list -- this must never be able to break a scan for a repo that
-        does not use the feature.
+        Takes TEXT, not a path, so the caller decides where the config came
+        from. That is the entire trust boundary: config read from the PR
+        checkout would let a PR choose the policy that judges it (ship a
+        one-rule pack matching nothing, point rubric_packs at it, get a clean
+        scan). entrypoint reads it from the base ref.
+
+        Returns [] for anything unusable -- this must never break a scan for a
+        repo that does not use the feature.
         """
-        if not self.repo_root:
-            return []
-        config_path = self.repo_root / ".guardspine" / "config.yml"
-        if not config_path.exists():
-            return []
         try:
-            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-        except Exception as exc:
-            self._warn(f"Could not parse .guardspine/config.yml: {exc}")
+            raw = yaml.safe_load(config_text) or {}
+        except Exception:
             return []
         if not isinstance(raw, dict):
             return []
@@ -251,22 +258,20 @@ class RiskClassifier:
         if not isinstance(packs, list):
             return []
 
+        # Aliases and their target stems are the same pack; collapse them so
+        # ["hipaa", "hipaa-safeguards"] cannot load one pack's rules twice.
         seen: set[str] = set()
         names: list[str] = []
         for entry in packs:
             if not isinstance(entry, (str, int)):
                 continue
             name = str(entry).strip()
-            # Dedupe: a repeated pack name would otherwise load the same rules
-            # twice and double-report every finding it produces.
-            if not name or name in seen:
+            canonical = cls.BUILTIN_ALIASES.get(name, name)
+            if not name or canonical in seen:
                 continue
-            seen.add(name)
-            names.append(name)
-            if len(names) >= self.MAX_CONFIG_PACKS:
-                self._warn(
-                    f"rubric_packs truncated to the first {self.MAX_CONFIG_PACKS} entries"
-                )
+            seen.add(canonical)
+            names.append(canonical)
+            if len(names) >= cls.MAX_CONFIG_PACKS:
                 break
         return names
 
@@ -505,47 +510,37 @@ class RiskClassifier:
     # edit it), so a pack name must never become an arbitrary filesystem read.
     MAX_CONFIG_PACKS = 32
 
-    def _resolve_pack_path(self, pack: str) -> Path | None:
-        """Resolve a config.yml pack name, confined to safe locations.
+    @classmethod
+    def shipped_rubrics(cls) -> dict[str, Path]:
+        """Rubric YAMLs packaged INSIDE the Action image.
 
-        Unlike the `rubric:` workflow input -- which a repo ADMIN sets and which
-        may legitimately point anywhere -- pack names come from a file any
-        contributor can edit in a PR. Only shipped builtins and files inside the
-        repo's own rubric directories are reachable, and the resolved path must
-        still be inside them after following symlinks.
+        Deliberately excludes discover_builtin_rubrics()'s repo-root candidates:
+        those scan directories the PR controls, and first-match-wins means a PR
+        that drops its own rubrics/builtin/hipaa-safeguards.yaml would shadow the
+        real pack. Only these paths are safe to resolve a config pack against.
         """
-        if pack in self.builtin_rubrics:
-            return self.builtin_rubrics[pack]
+        shipped: dict[str, Path] = {}
+        directory = Path(__file__).resolve().parents[1] / "rubrics" / "builtin"
+        if directory.exists():
+            for ext in ("*.yaml", "*.yml"):
+                for file_path in directory.glob(ext):
+                    shipped.setdefault(file_path.stem, file_path)
+        for alias, stem in cls.BUILTIN_ALIASES.items():
+            if stem in shipped:
+                shipped.setdefault(alias, shipped[stem])
+        return shipped
 
-        candidate = Path(pack)
-        if candidate.is_absolute() or ".." in candidate.parts:
-            return None
-        if not self.repo_root:
-            return None
+    def _resolve_pack_path(self, pack: str) -> Path | None:
+        """Resolve a config pack name against SHIPPED packs only.
 
-        try:
-            repo_real = self.repo_root.resolve()
-        except OSError:
-            return None
-
-        for directory in (
-            repo_real / ".guardspine" / "rubrics",
-            repo_real / ".codeguard" / "rubrics",
-            repo_real / "rubrics",
-        ):
-            for suffix in ("", ".yaml", ".yml"):
-                target = directory / (pack + suffix)
-                if not target.exists():
-                    continue
-                try:
-                    real = target.resolve()
-                except OSError:
-                    continue
-                # Re-check containment AFTER resolving, so a symlink pointing
-                # out of the repo is rejected rather than followed.
-                if real.is_relative_to(repo_real) and real.is_file():
-                    return real
-        return None
+        Repo-local rubric files are intentionally NOT reachable from config:
+        they live in the PR checkout, so honoring them would reintroduce the
+        "a PR picks its own policy" hole from the other direction. A repo that
+        wants a custom rubric points the `rubric:` input at it -- that input
+        comes from the workflow file, which GitHub runs from the BASE branch on
+        pull_request events, so it is not PR-controlled.
+        """
+        return self.shipped_rubrics().get(pack)
 
     def _load_pack_rules(self, packs: list[str]) -> tuple[list[dict], list[str]]:
         """Load and concatenate several packs.
@@ -564,9 +559,10 @@ class RiskClassifier:
             path = self._resolve_pack_path(pack)
             if path is None:
                 errors.append(
-                    f"Rubric pack {pack!r} from .guardspine/config.yml could not be "
-                    "resolved to a shipped pack or a file in the repo's rubric "
-                    "directories; skipped"
+                    f"Rubric pack {pack!r} from .guardspine/config.yml is not a "
+                    "pack shipped with this Action; skipped. (Repo-local rubric "
+                    "files are not selectable here -- point the workflow's "
+                    "`rubric:` input at one instead.)"
                 )
                 continue
             try:
