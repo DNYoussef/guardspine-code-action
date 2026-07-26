@@ -57,6 +57,7 @@ class TestEntrypointPIIShield(unittest.TestCase):
                     tier_override=None,
                     deliberate=False,
                     ai_diff_content=None,
+                    rubric_packs=None,
                 ):
                     captured["raw"] = diff_content
                     captured["ai"] = ai_diff_content
@@ -85,6 +86,17 @@ class TestEntrypointPIIShield(unittest.TestCase):
 
                 def __init__(self, *args, **kwargs):
                     pass
+
+                def rubric_prompt_packs(self):
+
+                    # No packs: these probes are about PII sanitization,
+
+                    # and an empty list leaves the prompt free of a
+
+                    # governance block exactly as before.
+
+                    return []
+
 
                 def classify(self, analysis):
                     captured["analysis"] = analysis
@@ -211,7 +223,8 @@ class TestFailOpenOnNonNetworkError(unittest.TestCase):
                 def __init__(self, *args, **kwargs):
                     pass
                 def analyze(self, diff_content, rubric="default", tier_override=None,
-                            deliberate=False, ai_diff_content=None):
+                            deliberate=False, ai_diff_content=None,
+                            rubric_packs=None):
                     return {
                         "files_changed": 1, "lines_added": 1, "lines_removed": 0,
                         "files": [], "sensitive_zones": [],
@@ -228,6 +241,12 @@ class TestFailOpenOnNonNetworkError(unittest.TestCase):
                     return {"default"}
                 def __init__(self, *args, **kwargs):
                     pass
+                def rubric_prompt_packs(self):
+                    # No packs: these probes are about PII sanitization,
+                    # and an empty list leaves the prompt free of a
+                    # governance block exactly as before.
+                    return []
+
                 def classify(self, analysis):
                     return {
                         "risk_tier": "L0", "risk_drivers": [],
@@ -321,7 +340,7 @@ def _make_stubs():
         def __init__(self, *a, **kw):
             pass
         def analyze(self, diff_content, rubric="default", tier_override=None,
-                    deliberate=False, ai_diff_content=None):
+                    deliberate=False, ai_diff_content=None, rubric_packs=None):
             return {
                 "files_changed": 1, "lines_added": 1, "lines_removed": 0,
                 "files": [], "sensitive_zones": [],
@@ -338,6 +357,12 @@ def _make_stubs():
             return {"default"}
         def __init__(self, *a, **kw):
             pass
+        def rubric_prompt_packs(self):
+            # No packs: these probes are about PII sanitization,
+            # and an empty list leaves the prompt free of a
+            # governance block exactly as before.
+            return []
+
         def classify(self, analysis):
             return {
                 "risk_tier": "L0", "risk_drivers": [],
@@ -485,6 +510,12 @@ class TestSARIFSanitizationPath(unittest.TestCase):
                 return {"default"}
             def __init__(self, *a, **kw):
                 pass
+            def rubric_prompt_packs(self):
+                # No packs: these probes are about PII sanitization,
+                # and an empty list leaves the prompt free of a
+                # governance block exactly as before.
+                return []
+
             def classify(self, analysis):
                 return {
                     "risk_tier": "L1", "risk_drivers": [],
