@@ -190,14 +190,15 @@ def test_truncation_says_the_regex_engine_still_enforces_the_rest():
 # Drift: the vendored renderer must match the canonical one
 # ---------------------------------------------------------------------------
 
-# The vector is authored in guardspine-spec, next to the other
+# The vector is authored in guardspine-spec under fixtures/prompt-context/
+# (NOT golden-vectors/, which is validated as evidence bundles). Next to the other
 # cross-implementation vectors. A copy is checked in here because the action's
 # CI does not clone that repo, and a drift gate that skips in CI is not a gate
 # -- it is a comment that costs a test run.
 LOCAL_VECTOR = Path(__file__).resolve().parent / "fixtures" / "rubric-prompt-context.json"
 SHARED_VECTOR = (
     Path(__file__).resolve().parents[2]
-    / "guardspine-spec" / "fixtures" / "golden-vectors" / "rubric-prompt-context.json"
+    / "guardspine-spec" / "fixtures" / "prompt-context" / "rubric-prompt-context.json"
 )
 
 
