@@ -17,6 +17,11 @@ from dataclasses import dataclass
 
 import yaml
 
+try:  # mirrors analyzer's own package/top-level import shim
+    from .analyzer import AI_UNAVAILABLE_PREFIX
+except ImportError:  # pragma: no cover - import-path shim for test layout
+    from analyzer import AI_UNAVAILABLE_PREFIX
+
 try:
     from .severity import normalize_severity, severity_rank, validate_severity
 except ImportError:  # pragma: no cover - supports direct src/ path imports
@@ -52,6 +57,45 @@ class Finding:
 
     def __post_init__(self) -> None:
         self.severity = normalize_severity(self.severity)
+
+
+def _ai_consensus_finding(idx: int, concern: str, *, severity: str, label: str) -> "Finding":
+    """Turn one aggregated model concern into a finding.
+
+    Two kinds arrive on the same list of strings. A concern is normally
+    something a reviewer model noticed about the diff. But a review that never
+    ran also lands here, and labelling an unreachable provider "AI concern"
+    tells the reviewer their code has a problem it does not have -- and teaches
+    them these findings are noise, which is the one thing a governance product
+    cannot afford.
+
+    The unavailability text is emitted by analyzer._fail_closed_review and is
+    already safe to publish: the provider's raw exception carries our user id,
+    routing and billing state, and is kept out of the concern deliberately.
+    """
+    if concern.startswith(AI_UNAVAILABLE_PREFIX):
+        return Finding(
+            id=f"AI-UNAVAILABLE-{idx}",
+            severity=severity,
+            message=concern,
+            file="",
+            line=None,
+            # Its own rule id: this is a statement about coverage, and a
+            # reviewer filtering ai-consensus findings should still see it.
+            rule_id="ai-availability",
+            zone=None,
+            provable=False,
+        )
+    return Finding(
+        id=f"{label}-{idx}",
+        severity=severity,
+        message=f"{'AI concern' if label == 'AI-CONCERN' else 'AI minority concern'}: {concern}",
+        file="",
+        line=None,
+        rule_id="ai-consensus",
+        zone=None,
+        provable=False,
+    )
 
 
 class RiskClassifier:
@@ -806,16 +850,8 @@ class RiskClassifier:
             elif ai_summary.get("concerns"):
                 ai_concerns = ai_summary["concerns"]
             for idx, concern in enumerate(ai_concerns[:3]):
-                findings.append(Finding(
-                    id=f"AI-CONCERN-{idx}",
-                    severity="high",
-                    message=f"AI concern: {concern}",
-                    file="",
-                    line=None,
-                    rule_id="ai-consensus",
-                    zone=None,
-                    provable=False,
-                ))
+                findings.append(_ai_consensus_finding(
+                    idx, concern, severity="high", label="AI-CONCERN"))
 
         elif consensus_risk == "request_changes":
             # Single dissenter flagged but majority approved.
@@ -828,16 +864,8 @@ class RiskClassifier:
             elif ai_summary.get("concerns"):
                 ai_concerns = ai_summary["concerns"]
             for idx, concern in enumerate(ai_concerns[:3]):
-                findings.append(Finding(
-                    id=f"AI-MINORITY-{idx}",
-                    severity="medium",
-                    message=f"AI minority concern: {concern}",
-                    file="",
-                    line=None,
-                    rule_id="ai-consensus",
-                    zone=None,
-                    provable=False,
-                ))
+                findings.append(_ai_consensus_finding(
+                    idx, concern, severity="medium", label="AI-MINORITY"))
 
         elif consensus_risk == "comment":
             # AI is uncertain: single-downgrade lower-tier zone findings (soften keyword

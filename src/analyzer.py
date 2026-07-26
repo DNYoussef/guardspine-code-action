@@ -30,6 +30,12 @@ except ImportError:  # pragma: no cover - import-path shim for test layout
     from rubric_context import format_rubric_context
 
 
+# Marks a review that did not happen, as distinct from one that found nothing.
+# The string is the contract between this module and risk_classifier, which
+# must not label an unreachable provider as a concern about the diff. Imported
+# rather than repeated so the two cannot drift apart.
+AI_UNAVAILABLE_PREFIX = "AI review incomplete:"
+
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
 AI_REVIEW_ENVELOPE_KEY = "codeguard_review"
 AI_REVIEW_TOOL_NAME = "submit_codeguard_review"
@@ -888,7 +894,10 @@ class DiffAnalyzer:
                     reviews[idx] = future.result()
                 except Exception as e:
                     reviews[idx] = self._fail_closed_review(
-                        f"AI review failed: {e}",
+                        # NOT f"...{e}". Concerns are rendered into a comment on
+                        # the customer's pull request, and a provider exception
+                        # carries our user id, routing and billing state.
+                        f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error",
                         model_name=model,
                         provider=provider,
                         error=str(e),
@@ -930,7 +939,10 @@ class DiffAnalyzer:
                     reviews[idx] = parsed
                 except Exception as e:
                     reviews[idx] = self._fail_closed_review(
-                        f"AI cross-check failed: {e}",
+                        # Same reason as the review path: never the raw
+                        # exception, which reaches a customer's PR comment.
+                        f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error "
+                        f"during cross-check",
                         model_name=model,
                         provider=provider,
                         model_id=model,
@@ -1070,7 +1082,7 @@ Respond only through the required structured verdict schema:
 
         except Exception as e:
             return self._fail_closed_review(
-                f"AI review failed: {e}",
+                f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error",
                 model_name=model,
                 provider=provider,
                 model_id=model,
