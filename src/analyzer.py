@@ -24,8 +24,10 @@ from unidiff import PatchSet
 
 try:  # works both as a package (src.analyzer) and top-level (analyzer)
     from .secret_detector import detect as detect_secrets
+    from .rubric_context import format_rubric_context
 except ImportError:  # pragma: no cover - import-path shim for test layout
     from secret_detector import detect as detect_secrets
+    from rubric_context import format_rubric_context
 
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
@@ -495,6 +497,7 @@ class DiffAnalyzer:
         tier_override: str = None,
         deliberate: bool = False,
         ai_diff_content: str | None = None,
+        rubric_packs: list[dict] | None = None,
     ) -> AnalysisResult:
         """
         Analyze a diff with tier-based multi-model review.
@@ -513,6 +516,11 @@ class DiffAnalyzer:
             ai_diff_content: Optional alternate diff content used only for AI prompts.
                 This enables privacy-preserving redaction for model calls while
                 preserving raw-diff provenance for audit hashes.
+            rubric_packs: The governance packs in force, as
+                RiskClassifier.rubric_prompt_packs() renders them. Held for the
+                whole analysis rather than threaded through the review chain --
+                it does not vary per provider or per round, and five extra
+                parameters carrying a constant is noise, not clarity.
 
         Returns:
             Dict with keys: files_changed, lines_added, lines_removed,
@@ -651,6 +659,9 @@ class DiffAnalyzer:
             diff_hash=self._hash_diff(diff_content),
             preliminary_tier=preliminary_tier,
         )
+
+        # The rules the reviewers are shown. Read by _build_review_prompt.
+        self._rubric_packs = rubric_packs or None
 
         # Apply tier override if provided (e.g., from eval harness)
         effective_tier = tier_override or preliminary_tier
@@ -1070,11 +1081,28 @@ Respond only through the required structured verdict schema:
 
     def _build_review_prompt(
         self, diff_content: str, sensitive_zones: list,
-        rubric: str, use_rubric: bool
+        rubric: str, use_rubric: bool,
+        rubric_packs: list[dict] | None = None,
     ) -> str:
-        """Build the prompt for AI code review."""
+        """Build the prompt for AI code review.
+
+        ``rubric_packs`` is what the repo is actually governed by, rendered so
+        the models can see the controls themselves. Before it existed this
+        method interpolated the rubric's NAME and appended five fixed
+        dimensions -- byte-identical for every pack -- so a repo governed by
+        HIPAA had its reviewers told the word "HIPAA-SAFEGUARDS" and none of
+        the pack's thirteen rules. A rubric is guidance for the reviewers;
+        without the rules it is a label.
+
+        The five scored dimensions stay. They are the response contract
+        ``_calculate_consensus`` aggregates, not guidance, and dropping them
+        would break consensus rather than change wording.
+        """
         rubric_section = ""
         if use_rubric:
+            if rubric_packs is None:
+                rubric_packs = getattr(self, "_rubric_packs", None)
+            governance = format_rubric_context(rubric_packs or None)
             rubric_section = f"""
 ## Rubric Evaluation Required
 
@@ -1089,6 +1117,7 @@ For {rubric.upper()} compliance, evaluate:
 
 Include rubric_scores in your JSON response. Use 1-5 numbers for scored
 dimensions and null for dimensions you did not score.
+{governance}
 """
 
         return f"""You are a senior security engineer reviewing a code diff for vulnerabilities. Your job is to catch security regressions -- code changes that weaken defenses, remove validation, or introduce exploitable flaws.

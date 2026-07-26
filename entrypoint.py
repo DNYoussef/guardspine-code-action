@@ -502,6 +502,28 @@ def main():
             sys.exit(1)
     print("::endgroup::")
 
+    # Load the governance rubric BEFORE the review. Constructing the
+    # classifier needs no analysis -- only classify() does -- and the reviewers
+    # have to be shown the packs it resolves, so there is exactly one pack list
+    # behind both halves of the verdict.
+    print("::group::Loading rubric")
+    if not workspace.exists():
+        print("::error::GITHUB_WORKSPACE is not set - cannot locate repository root for rubric loading")
+        sys.exit(1)
+    try:
+        classifier = RiskClassifier(
+            rubric=rubric,
+            rubric_path=rubric_path,
+            policy_path=risk_policy_path,
+            repo_root=workspace,
+            rubric_explicit=rubric_explicit,
+            config_packs=_base_ref_config_packs(workspace),
+        )
+    except Exception as exc:
+        print(f"::error::Failed to load rubric/policy: {exc}")
+        sys.exit(1)
+    print("::endgroup::")
+
     # Analyze diff
     print("::group::Analyzing changes")
     analyzer = DiffAnalyzer(
@@ -530,6 +552,12 @@ def main():
         rubric=rubric,
         deliberate=deliberate,
         ai_diff_content=diff_content_for_ai,
+        # The reviewers see the controls, not just the rubric's name. Taken
+        # from the classifier so the models and the regex evaluator are shown
+        # the SAME rules -- these are the packs it actually loaded, from the
+        # base ref, so a PR cannot rewrite what its reviewers are told to
+        # look for any more than it can rewrite what the evaluator enforces.
+        rubric_packs=classifier.rubric_prompt_packs(),
     )
     analysis["raw_diff_hash"] = analysis.get("diff_hash", "")
     analysis["ai_diff_hash"] = (
@@ -567,22 +595,6 @@ def main():
 
     # Classify risk
     print("::group::Classifying risk")
-    if not workspace.exists():
-        print("::error::GITHUB_WORKSPACE is not set - cannot locate repository root for rubric loading")
-        sys.exit(1)
-    try:
-        classifier = RiskClassifier(
-            rubric=rubric,
-            rubric_path=rubric_path,
-            policy_path=risk_policy_path,
-            repo_root=workspace,
-            rubric_explicit=rubric_explicit,
-            config_packs=_base_ref_config_packs(workspace),
-        )
-    except Exception as exc:
-        print(f"::error::Failed to load rubric/policy: {exc}")
-        sys.exit(1)
-
     risk_result = classifier.classify(analysis)
     risk_tier = risk_result["risk_tier"]
     risk_drivers = risk_result["risk_drivers"]
