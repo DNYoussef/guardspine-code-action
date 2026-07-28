@@ -1114,7 +1114,6 @@ Respond only through the required structured verdict schema:
 
 Score each dimension from 1-5 (1=poor, 5=excellent):
 
-For {rubric.upper()} compliance, evaluate:
 - security_impact: Does this change introduce security risks?
 - code_quality: Is the code well-structured and maintainable?
 - test_coverage: Are changes adequately tested?

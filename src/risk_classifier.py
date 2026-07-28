@@ -186,6 +186,7 @@ class RiskClassifier:
         self.zone_severity = dict(self.DEFAULT_ZONE_SEVERITY)
         self.size_thresholds = dict(self.DEFAULT_SIZE_THRESHOLDS)
 
+        self._rubric_prompt_rules: list[dict] = []
         self.rubric_rules, self.rubric_errors = self._load_rubric_rules()
 
         if policy_path:
@@ -310,10 +311,13 @@ class RiskClassifier:
                 raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
                 declared = raw.get("rules") if isinstance(raw, dict) else raw
                 declared_n = len(declared) if isinstance(declared, (list, dict)) else 0
-                compiled, _ = cls._parse_rubric_file(path, source_pack=stem)
+                rules, _ = cls._parse_rubric_file(path, source_pack=stem)
             except Exception:
                 continue
-            catalog[stem] = {"declared": declared_n, "compiled": len(compiled)}
+            catalog[stem] = {
+                "declared": declared_n,
+                "compiled": sum(r["evaluator_eligible"] for r in rules),
+            }
         return catalog
 
     @classmethod
@@ -365,7 +369,7 @@ class RiskClassifier:
     def _parse_rubric_file(
         path: Path, source_pack: str | None = None
     ) -> tuple[list[dict], list[str]]:
-        """Parse ONE rubric YAML into compiled rule dicts + errors.
+        """Parse ONE rubric YAML into normalized rule dicts + errors.
 
         Split out of _load_rubric_rules so the same parsing/compiling path is
         reused for every pack in a multi-pack load -- a second parser would
@@ -433,16 +437,15 @@ class RiskClassifier:
                 except Exception as exc:
                     errors.append(f"{prefix}Rule {rid} skipped pattern {raw_pattern!r}: {exc}")
 
-            if not compiled_patterns:
-                if not raw_patterns:
-                    errors.append(f"{prefix}Rule {rid} skipped: no valid pattern(s)")
-                continue
-
             exceptions = rule.get("exceptions", [])
             if isinstance(exceptions, str):
                 exceptions = [exceptions]
             elif not isinstance(exceptions, list):
                 exceptions = []
+
+            enabled = rule.get("enabled", True) is not False
+            evaluator_eligible = enabled and bool(compiled_patterns)
+            reviewer_eligible = enabled and (not raw_patterns or bool(compiled_patterns))
 
             rules.append({
                 "id": rid,
@@ -454,10 +457,12 @@ class RiskClassifier:
                 ),
                 "control_category": rule.get("category"),
                 "control_name": rule.get("name"),
-                "pattern": raw_patterns[0],
+                "pattern": raw_patterns[0] if raw_patterns else "",
                 "patterns": raw_patterns,
-                "compiled": compiled_patterns[0],  # backwards compatibility
+                "compiled": compiled_patterns[0] if compiled_patterns else None,
                 "compiled_patterns": compiled_patterns,
+                "evaluator_eligible": evaluator_eligible,
+                "reviewer_eligible": reviewer_eligible,
                 "exceptions": [str(e) for e in exceptions],
                 "source_pack": source_pack,
                 "pack_name": pack_name or source_pack,
@@ -471,15 +476,14 @@ class RiskClassifier:
 
         A rubric is not only a regex list -- it is what the models are told to
         look for once the risk tier decides they should look. Built from
-        self.rubric_rules so the models and the regex evaluator see the SAME
-        rules: anything the evaluator could not load is not claimed to the
-        model either, and anything the evaluator enforces is stated.
+        the normalized reviewer-eligible rules. This includes semantic
+        controls without a pattern, but never disabled rules or invalid regexes.
 
         Grouped by pack and in load order, because a finding citing SOX-302
         means nothing unless the block naming SOX ITGC sits above it.
         """
         packs: dict[str, dict] = {}
-        for rule in self.rubric_rules:
+        for rule in self._rubric_prompt_rules:
             key = rule.get("source_pack") or self.rubric
             pack = packs.setdefault(key, {
                 "name": rule.get("pack_name") or key,
@@ -494,6 +498,7 @@ class RiskClassifier:
                 # and expects a rubric's own vocabulary.
                 "name": rule.get("control_name") or rule.get("id"),
                 "description": rule.get("message") or "",
+                "reviewer_only": not rule.get("evaluator_eligible"),
             })
         return list(packs.values())
 
@@ -513,6 +518,9 @@ class RiskClassifier:
                 "message": rule.get("message", "Policy rule triggered"),
                 "pattern": rule.get("pattern", ""),
                 "compiled": compiled,
+                "compiled_patterns": [compiled] if compiled else [],
+                "evaluator_eligible": bool(compiled),
+                "reviewer_eligible": bool(compiled),
                 "source_pack": self.rubric,
             })
         return rules, errors
@@ -551,6 +559,8 @@ class RiskClassifier:
         else:
             rules, errors = self._load_configured_rubric()
 
+        self._rubric_prompt_rules = [r for r in rules if r["reviewer_eligible"]]
+        rules = [r for r in rules if r["evaluator_eligible"]]
         for err in errors:
             self._warn(err)
         return rules, errors
