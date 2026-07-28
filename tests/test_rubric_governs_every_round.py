@@ -194,7 +194,10 @@ def test_the_final_verdict_was_not_produced_by_a_rubric_blind_round(monkeypatch)
 
     seen: list[str] = []
 
-    def fake_call(model, prompt, *args, **kwargs):
+    # Signature order matches the real _call_* contract: (prompt, model).
+    # Getting this backwards made an earlier draft of this probe append model
+    # NAMES to `seen`, so it "failed" without ever inspecting a prompt.
+    def fake_call(prompt, model, *args, **kwargs):
         seen.append(prompt)
         # Disagreement, so the run cannot early-exit before deliberation.
         verdict = "request_changes" if "model-0" in str(model) else "approve"
