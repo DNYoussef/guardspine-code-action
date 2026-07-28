@@ -195,3 +195,69 @@ def test_a_shipped_pack_name_is_not_affected(tmp_path, monkeypatch):
 
     resolved = _resolve(repo, "security")
     assert resolved is None or "HEAD-PERMISSIVE-1" not in _rules_at(resolved)
+
+
+# ---------------------------------------------------------------------------
+# The same defect, one layer up
+#
+# Found by auditing the first implementation. It routed the explicit `rubric:`
+# path through the base ref correctly -- and main() never reached that code for
+# a rubric the repository can also DISCOVER. discover_builtin_rubrics(workspace)
+# finds files under <workspace>/rubrics/builtin, so a PR that adds
+# rubrics/builtin/sneaky.yaml makes `rubric: sneaky` a "builtin name", and the
+# first branch hands back the PR's own file.
+#
+# Both halves are PR-controlled: the file and the input that selects it. That is
+# the whole property this gate exists to defend, bypassed by choosing a
+# different directory.
+#
+# The fix is one decision point. Three branches deciding what governs, only one
+# of which checks the base ref, is how this happened.
+# ---------------------------------------------------------------------------
+
+def _governing(workspace: Path, rubric: str, rubrics_dir=None):
+    """The single decision: what actually governs this scan.
+
+    Must cover all three cases -- a shipped pack, a repo file named explicitly,
+    and a repo file the workspace merely makes discoverable. Returns a Path (or
+    None) whose content is what the reviewers and evaluator will use.
+    """
+    import entrypoint
+
+    return entrypoint._governing_rubric_path(workspace, rubric, rubrics_dir)
+
+
+def test_a_pr_cannot_plant_a_rubric_in_the_builtin_directory(tmp_path, monkeypatch):
+    repo = _repo_with(tmp_path, STRICT, STRICT)
+    planted = repo / "rubrics" / "builtin" / "sneaky.yaml"
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_text(yaml.dump(PERMISSIVE), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    resolved = _governing(repo, "sneaky")
+    assert "HEAD-PERMISSIVE-1" not in _rules_at(resolved), (
+        "a rubric the PR added under rubrics/builtin/ governed the PR that "
+        "added it -- the base-ref check was bypassed by directory choice"
+    )
+
+
+def test_a_genuinely_shipped_pack_still_governs(tmp_path, monkeypatch):
+    """The counterweight: packs that ship inside the container are ours, not
+    repo content, and must keep working on a PR."""
+    repo = _repo_with(tmp_path, STRICT, STRICT)
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    resolved = _governing(repo, "security")
+    assert resolved is not None, "a shipped pack stopped resolving on a PR"
+    ids = _rules_at(resolved)
+    assert ids, "the shipped pack resolved to something with no rules"
+    assert "HEAD-PERMISSIVE-1" not in ids
+
+
+def test_the_explicit_path_case_still_holds_through_the_one_decision(tmp_path, monkeypatch):
+    repo = _repo_with(tmp_path, STRICT, PERMISSIVE)
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    ids = _rules_at(_governing(repo, "rubrics/policy.yaml"))
+    assert "BASE-STRICT-1" in ids
+    assert "HEAD-PERMISSIVE-1" not in ids
