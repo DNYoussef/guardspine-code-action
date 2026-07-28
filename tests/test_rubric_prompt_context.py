@@ -22,16 +22,14 @@ Each asserts specific rule ids and their text, because "the block is non-empty"
 is exactly the check that would have passed on the broken version.
 """
 
-import json
 import re
 from pathlib import Path
 
-import pytest
 import yaml
+from guardspine_prompts import format_rubric_context
 
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
-from src.rubric_context import format_rubric_context
 
 RUBRIC_DIR = Path(__file__).resolve().parents[1] / "rubrics" / "builtin"
 
@@ -187,56 +185,6 @@ def test_truncation_says_the_regex_engine_still_enforces_the_rest():
 
 
 # ---------------------------------------------------------------------------
-# Drift: the vendored renderer must match the canonical one
-# ---------------------------------------------------------------------------
-
-# The vector is authored in guardspine-spec under fixtures/prompt-context/
-# (NOT golden-vectors/, which is validated as evidence bundles). Next to the other
-# cross-implementation vectors. A copy is checked in here because the action's
-# CI does not clone that repo, and a drift gate that skips in CI is not a gate
-# -- it is a comment that costs a test run.
-LOCAL_VECTOR = Path(__file__).resolve().parent / "fixtures" / "rubric-prompt-context.json"
-SHARED_VECTOR = (
-    Path(__file__).resolve().parents[2]
-    / "guardspine-spec" / "fixtures" / "prompt-context" / "rubric-prompt-context.json"
-)
-
-
-def test_vendored_renderer_matches_the_golden_vector():
-    """src/rubric_context.py is a COPY of codeguard.prompts.format_rubric_context,
-    which this repo cannot import. A private copy of shared logic is exactly
-    what produced the v2.2.0 signature failure: a bespoke canonicalizer drifted
-    from the shared one and every signed bundle was rejected, undetected, for
-    two releases.
-
-    This probe is what makes the copy safe. It runs everywhere, CI included.
-    """
-    vector = json.loads(LOCAL_VECTOR.read_text(encoding="utf-8"))
-    assert format_rubric_context(vector["input"]) == vector["expected"], (
-        "the vendored renderer no longer produces the agreed output"
-    )
-
-
-def test_the_local_vector_still_matches_the_shared_one():
-    """Catches the direction the probe above cannot: canonical and vector
-    updated together, this repo left behind. Only runs where both repos are
-    checked out -- a developer's machine -- so it is a backstop, not the gate.
-
-    The residual gap is real and worth naming: if the canonical renderer and
-    the shared vector change while nobody runs this on a machine with both
-    repos, the action ships a stale renderer that still passes its own test.
-    Publishing codeguard so this file can be deleted closes it properly.
-    """
-    if not SHARED_VECTOR.exists():
-        pytest.skip("guardspine-spec not checked out alongside this repo")
-
-    assert (
-        json.loads(LOCAL_VECTOR.read_text(encoding="utf-8"))
-        == json.loads(SHARED_VECTOR.read_text(encoding="utf-8"))
-    ), "tests/fixtures/rubric-prompt-context.json is behind guardspine-spec"
-
-
-# ---------------------------------------------------------------------------
 # Injection through the verbatim-cited fields
 #
 # name/description were always sanitized; id and severity were not, on the
@@ -271,14 +219,12 @@ def test_a_repo_supplied_rubric_cannot_inject_instructions_through_a_rule_id(tmp
 
 def test_no_shipped_rule_id_is_damaged_by_the_sanitizer():
     """A sanitizer that mangles the ids findings must cite is not a fix."""
-    from src.rubric_context import _rubric_token
-
     altered = []
     for path in sorted(RUBRIC_DIR.glob("*.yaml")):
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         for rule in (raw.get("rules") or []):
             if isinstance(rule, dict) and rule.get("id") is not None:
                 original = str(rule["id"])
-                if _rubric_token({"id": original}, "id") != original:
+                if original not in format_rubric_context([{"rules": [rule]}]):
                     altered.append((path.name, original))
     assert not altered, f"the sanitizer changed real rule ids: {altered[:5]}"
