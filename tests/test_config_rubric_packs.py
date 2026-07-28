@@ -375,10 +375,26 @@ def _repo_with_config(tmp_path, packs, branch="main"):
 def test_ge_packs_are_read_from_a_real_base_ref(tmp_path, monkeypatch):
     from entrypoint import _base_ref_config_packs
 
-    repo = _repo_with_config(tmp_path, ["security", "dora"])
+    # Canonical pack names, deliberately. This test is about WHERE the pack
+    # list is read from, not about alias resolution. It previously used "dora"
+    # as an arbitrary placeholder, which silently became a real alias when the
+    # DORA pack shipped -- the reader canonicalised it and the test broke for a
+    # reason that had nothing to do with base refs.
+    repo = _repo_with_config(tmp_path, ["security", "clarity"])
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
 
-    assert _base_ref_config_packs(repo) == ["security", "dora"]
+    assert _base_ref_config_packs(repo) == ["security", "clarity"]
+
+
+def test_ge_a_short_alias_is_canonicalised_on_read(tmp_path, monkeypatch):
+    """The behaviour the placeholder above was testing by accident. A repo may
+    write the short name; what comes back is the pack that actually governs."""
+    from entrypoint import _base_ref_config_packs
+
+    repo = _repo_with_config(tmp_path, ["dora"])
+    monkeypatch.setenv("GITHUB_BASE_REF", "main")
+
+    assert _base_ref_config_packs(repo) == ["dora-ict-requirements"]
 
 
 def test_ge_the_pr_copy_is_not_what_gets_read(tmp_path, monkeypatch):
