@@ -72,13 +72,29 @@ def test_the_renderer_comes_from_an_installed_distribution():
 def test_the_pin_is_exact_and_hashed():
     """This repo installs with --require-hashes. An unpinned or unhashed
     renderer would let a compromised release change what every reviewer model
-    is told, on the next build, with no diff here."""
-    reqs = (ROOT / "requirements.txt").read_text(encoding="utf-8")
-    assert "guardspine-prompts==" in reqs, "the renderer is not pinned"
-    lines = reqs.splitlines()
-    idx = next(i for i, line in enumerate(lines) if line.startswith("guardspine-prompts=="))
-    following = "\n".join(lines[idx:idx + 4])
-    assert "--hash=sha256:" in following, "the pin carries no hash"
+    is told, on the next build, with no diff here.
+
+    EVERY install path, not just the one I happened to check. The first cut of
+    this probe read requirements.txt alone and went green while CI installed
+    requirements-ci.txt, which had no pin at all -- the same two-copies-one-
+    drifted defect this whole phase exists to delete, in a different costume.
+    Globbed rather than named so a third requirements file is covered the day
+    it is added.
+    """
+    install_files = sorted(ROOT.glob("requirements*.txt"))
+    assert install_files, "no requirements files found -- this probe is blind"
+
+    for path in install_files:
+        reqs = path.read_text(encoding="utf-8")
+        name = path.name
+        assert "guardspine-prompts==" in reqs, (
+            f"{name} installs the action but does not pin the renderer"
+        )
+        lines = reqs.splitlines()
+        idx = next(i for i, line in enumerate(lines)
+                   if line.startswith("guardspine-prompts=="))
+        following = "\n".join(lines[idx:idx + 4])
+        assert "--hash=sha256:" in following, f"{name} pins the renderer with no hash"
 
 
 def test_the_prompt_still_carries_a_rubrics_rules():
