@@ -28,9 +28,7 @@ more human review, and the tier is driven by risk_assessment, not by whether a
 finding was emitted.
 """
 
-import pytest
-
-from src.analyzer import AI_UNAVAILABLE_PREFIX, DiffAnalyzer
+from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
 
 # A realistic provider error: nested JSON, billing state, an internal user id.
@@ -75,18 +73,15 @@ def test_the_provider_error_never_reaches_a_concern():
         )
 
 
-def test_the_detail_is_still_kept_for_the_operator():
-    """Suppressing it from the PR comment must not mean losing it. The
-    operator needs the real error; it belongs in the diagnostic channel."""
+def test_the_error_type_is_kept_for_the_operator():
     review = _unavailable_review()
-    assert PROVIDER_ERROR in review.get("error", "")
+    assert review.get("error") == "RuntimeError"
 
 
-def test_the_concern_says_which_provider_failed_without_the_payload():
+def test_a_provider_failure_is_not_model_prose():
     review = _unavailable_review()
-    concern = review["concerns"][0]
-    assert concern.startswith(AI_UNAVAILABLE_PREFIX)
-    assert "openrouter" in concern
+    assert review["concerns"] == []
+    assert review["provider"] == "openrouter"
 
 
 # ---------------------------------------------------------------------------
@@ -110,20 +105,6 @@ def _msg(finding) -> str:
     return finding["message"] if isinstance(finding, dict) else finding.message
 
 
-def _fid(finding) -> str:
-    return finding["id"] if isinstance(finding, dict) else finding.id
-
-
-def test_an_outage_is_not_labelled_as_a_concern_about_the_code():
-    findings = _findings_for([f"{AI_UNAVAILABLE_PREFIX} openrouter returned an error"])
-    outage = [f for f in findings if AI_UNAVAILABLE_PREFIX in _msg(f)]
-    assert outage, "the reviewer is told nothing about the incomplete review"
-    for finding in outage:
-        assert not _msg(finding).startswith("AI concern:"), (
-            "an unreachable provider is being presented as a defect in the diff"
-        )
-
-
 def test_a_real_concern_is_still_labelled_as_one():
     """The fix must not launder genuine model findings into 'availability'."""
     findings = _findings_for(["Hardcoded API key in source"])
@@ -131,14 +112,10 @@ def test_a_real_concern_is_still_labelled_as_one():
     assert any(m.startswith("AI concern: Hardcoded API key") for m in messages), messages
 
 
-def test_the_two_kinds_are_distinguishable_by_id():
-    findings = _findings_for([
-        f"{AI_UNAVAILABLE_PREFIX} openrouter returned an error",
-        "Hardcoded API key in source",
-    ])
-    ids = {_fid(f) for f in findings if _fid(f).startswith(("AI-CONCERN", "AI-UNAVAILABLE"))}
-    assert any(i.startswith("AI-UNAVAILABLE") for i in ids), ids
-    assert any(i.startswith("AI-CONCERN") for i in ids), ids
+def test_a_prefix_in_model_prose_is_still_a_real_concern():
+    findings = _findings_for(["AI review incomplete: Hardcoded API key in source"])
+    messages = [_msg(f) for f in findings]
+    assert any(m.startswith("AI concern: AI review incomplete:") for m in messages), messages
 
 
 # ---------------------------------------------------------------------------
@@ -166,4 +143,3 @@ def test_parse_failures_keep_their_existing_wording():
     assert review["concerns"] == [
         "AI review output rejected: top-level value is not an object"
     ]
-    assert not review["concerns"][0].startswith(AI_UNAVAILABLE_PREFIX)

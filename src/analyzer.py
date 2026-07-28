@@ -30,12 +30,6 @@ except ImportError:  # pragma: no cover - import-path shim for test layout
     from rubric_context import format_rubric_context
 
 
-# Marks a review that did not happen, as distinct from one that found nothing.
-# The string is the contract between this module and risk_classifier, which
-# must not label an unreachable provider as a concern about the diff. Imported
-# rather than repeated so the two cannot drift apart.
-AI_UNAVAILABLE_PREFIX = "AI review incomplete:"
-
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
 AI_REVIEW_ENVELOPE_KEY = "codeguard_review"
 AI_REVIEW_TOOL_NAME = "submit_codeguard_review"
@@ -161,6 +155,9 @@ class AnalysisResult:
     models_used: int = 0
     models_failed: int = 0
     model_errors: list = field(default_factory=list)
+    review_coverage: dict = field(default_factory=lambda: {
+        "attempted": 0, "succeeded": 0, "failed": 0, "complete": True, "failures": [],
+    })
     consensus_risk: str = ""
     agreement_score: float = 0.0
     ai_summary: dict = field(default_factory=dict)
@@ -691,6 +688,7 @@ class DiffAnalyzer:
             result.models_used = multi_review.get("models_used", 0)
             result.models_failed = multi_review.get("models_failed", 0)
             result.model_errors = multi_review.get("model_errors", [])
+            result.review_coverage = multi_review.get("review_coverage", {})
             consensus = multi_review.get("consensus") or {}
             result.consensus_risk = consensus.get("consensus_risk") or ""
             result.agreement_score = consensus.get("agreement_score") or 0.0
@@ -806,8 +804,8 @@ class DiffAnalyzer:
             providers, diff_content, sensitive_zones, rubric, use_rubric)
 
         # Calculate consensus
-        failed_reviews = [r for r in reviews if r.get("error")]
-        successful_reviews = [r for r in reviews if not r.get("error")]
+        failed_reviews = [r for r in reviews if self._review_failed(r)]
+        successful_reviews = [r for r in reviews if not self._review_failed(r)]
         consensus = self._calculate_consensus(reviews, use_rubric)
 
         return {
@@ -816,9 +814,10 @@ class DiffAnalyzer:
             "models_failed": len(failed_reviews),
             "models_requested": models_needed,
             "model_errors": [
-                f"{r.get('provider')}/{r.get('model_name')}: {r.get('error', '')[:120]}"
+                f"{r.get('provider')}/{r.get('model_name')}: {self._error_type(r)}"
                 for r in failed_reviews
             ],
+            "review_coverage": self._review_coverage(reviews),
             "used_rubric": use_rubric,
             "rubric_name": rubric if use_rubric else None,
             "consensus": consensus,
@@ -894,13 +893,10 @@ class DiffAnalyzer:
                     reviews[idx] = future.result()
                 except Exception as e:
                     reviews[idx] = self._fail_closed_review(
-                        # NOT f"...{e}". Concerns are rendered into a comment on
-                        # the customer's pull request, and a provider exception
-                        # carries our user id, routing and billing state.
-                        f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error",
+                        "Provider review failed",
                         model_name=model,
                         provider=provider,
-                        error=str(e),
+                        error=type(e).__name__,
                     )
         return [r for r in reviews if r is not None]
 
@@ -939,16 +935,13 @@ class DiffAnalyzer:
                     reviews[idx] = parsed
                 except Exception as e:
                     reviews[idx] = self._fail_closed_review(
-                        # Same reason as the review path: never the raw
-                        # exception, which reaches a customer's PR comment.
-                        f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error "
-                        f"during cross-check",
+                        "Provider review failed",
                         model_name=model,
                         provider=provider,
                         model_id=model,
                         prompt_hash=prompt_hashes.get(idx, ""),
                         response_hash="",
-                        error=str(e),
+                        error=type(e).__name__,
                     )
         return [r for r in reviews if r is not None]
 
@@ -1037,17 +1030,18 @@ Respond only through the required structured verdict schema:
     ) -> dict:
         """Package deliberation output in a format compatible with
         _run_multi_model_review so downstream code doesn't change."""
-        failed = [r for r in final_reviews if r.get("error")]
-        successful = [r for r in final_reviews if not r.get("error")]
+        failed = [r for r in final_reviews if self._review_failed(r)]
+        successful = [r for r in final_reviews if not self._review_failed(r)]
         return {
             "reviews": final_reviews,
             "models_used": len(successful),
             "models_failed": len(failed),
             "models_requested": len(providers),
             "model_errors": [
-                f"{r.get('provider')}/{r.get('model_name')}: {r.get('error', '')[:120]}"
+                f"{r.get('provider')}/{r.get('model_name')}: {self._error_type(r)}"
                 for r in failed
             ],
+            "review_coverage": self._review_coverage(final_reviews),
             "used_rubric": use_rubric,
             "rubric_name": rubric if use_rubric else None,
             "consensus": consensus,
@@ -1082,13 +1076,13 @@ Respond only through the required structured verdict schema:
 
         except Exception as e:
             return self._fail_closed_review(
-                f"{AI_UNAVAILABLE_PREFIX} {provider} returned an error",
+                "Provider review failed",
                 model_name=model,
                 provider=provider,
                 model_id=model,
                 prompt_hash=prompt_hash,
                 response_hash="",
-                error=str(e),
+                error=type(e).__name__,
             )
 
     def _build_review_prompt(
@@ -1388,7 +1382,7 @@ Respond ONLY with the structured object above."""
         review = {
             "summary": reason[:200],
             "intent": "unknown",
-            "concerns": [reason],
+            "concerns": [] if error else [reason],
             "risk_assessment": "request_changes",
             "confidence": 0.0,
             "rubric_scores": {},
@@ -1450,10 +1444,19 @@ Respond ONLY with the structured object above."""
 
         valid_reviews = [
             r for r in reviews
-            if (r.get("risk_assessment") or "") in AI_REVIEW_RISK_ASSESSMENTS
+            if not self._review_failed(r)
+            and (r.get("risk_assessment") or "") in AI_REVIEW_RISK_ASSESSMENTS
         ]
         if not valid_reviews:
-            return {"error": "All model reviews failed"}
+            return {
+                "consensus_risk": "request_changes",
+                "agreement_score": 0.0,
+                "combined_concerns": [],
+                "dissenting_opinions": [],
+                "rubric_summary": {},
+                "models_agreed": 0,
+                "total_models": 0,
+            }
 
         # Count risk assessments (use `or` to handle None values)
         assessments = [r.get("risk_assessment") or "comment" for r in valid_reviews]
@@ -1523,6 +1526,29 @@ Respond ONLY with the structured object above."""
             "rubric_summary": rubric_summary,
             "models_agreed": assessment_counts.get(consensus_risk, 0),
             "total_models": len(valid_reviews),
+        }
+
+    @staticmethod
+    def _review_failed(review: dict) -> bool:
+        return bool(review.get("error") or review.get("parse_error") or review.get("schema_error"))
+
+    @staticmethod
+    def _error_type(review: dict) -> str:
+        return str(review.get("error") or "InvalidReviewResponse")
+
+    @classmethod
+    def _review_coverage(cls, reviews: list[dict]) -> dict:
+        failures = [
+            {"provider": str(review.get("provider", "")), "error_type": cls._error_type(review)}
+            for review in reviews if cls._review_failed(review)
+        ]
+        attempted = len(reviews)
+        return {
+            "attempted": attempted,
+            "succeeded": attempted - len(failures),
+            "failed": len(failures),
+            "complete": not failures,
+            "failures": failures,
         }
 
     def _fallback_analysis(self, diff_content: str) -> AnalysisResult:
