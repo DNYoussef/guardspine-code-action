@@ -1,0 +1,78 @@
+# NACHA / US Payments Operations Requirements Rubric
+# GuardSpine Governance Evidence Requirements
+#
+# Based on the NACHA Operating Rules (ACH), OFAC sanctions obligations,
+# BSA/AML (31 CFR Ch. X), Regulation E (12 CFR 1005), and Fedwire/RTP rules.
+# Citations verified against Nacha, OFAC, and CFR sources.
+#
+# Maps AI-assisted code changes to US money-movement control THEMES an examiner
+# asks about. It does NOT certify compliance; counsel must validate the mapping.
+
+name: "NACHA / US Payments Operations Requirements"
+version: "1.1.0"
+description: "Rubric pack for US ACH / money-movement compliance evidence generation"
+
+rules:
+  - id: "OFAC-SDN"
+    category: "Sanctions-Screening"
+    name: "OFAC Sanctions Screening"
+    description: "OFAC (31 CFR Ch. V): screen parties against the SDN list and block prohibited transactions before money movement"
+    severity: "critical"
+    patterns:
+      - "\\bofac\\b|sanction|\\bsdn\\b|blocked.?(person|party)|screen.*(payee|beneficiary|counterparty)"
+
+  - id: "BSA-AML"
+    category: "AML"
+    name: "BSA / AML Program"
+    description: "BSA/AML (31 CFR Ch. X): customer due diligence and suspicious-activity monitoring (distinct from OFAC sanctions)"
+    severity: "high"
+    patterns:
+      - "\\baml\\b|\\bbsa\\b|\\bkyc\\b|customer.?due.?diligence|suspicious.?activity|\\bsar\\b"
+
+  - id: "NACHA-ENTRY-APP3"
+    category: "ACH-Formatting"
+    name: "ACH Entry Formatting"
+    description: "Nacha Operating Rules (Art Two; Appendix Three record formats): valid SEC codes, routing/account, effective entry date"
+    severity: "high"
+    patterns:
+      - "\\bach\\b|nacha|\\bsec.?code\\b|\\bppd\\b|\\bccd\\b|web.?debit|routing.?number|\\baba\\b"
+
+  - id: "NACHA-RETURN-APP4"
+    category: "ACH-Returns"
+    name: "Return and NOC Handling"
+    description: "Nacha Operating Rules (Art Three; Appendix Four): processing of return entries (R-codes) and notifications of change"
+    severity: "high"
+    patterns:
+      - "return.?entry|\\br(01|02|03|04|05|07|08|09|10|11|20|29|51)\\b|notification.?of.?change|\\bnoc\\b"
+
+  - id: "NACHA-SDA"
+    category: "ACH-SameDay"
+    name: "Same Day ACH Windows"
+    description: "Nacha Operating Rules: Same Day ACH processing/settlement windows and cutoff handling"
+    severity: "medium"
+    patterns:
+      - "same.?day.?ach|\\bsda\\b|processing.?window|settlement.?window|cutoff.?time"
+
+  - id: "NACHA-AUTH-ART2"
+    category: "Debit-Authorization"
+    name: "ACH Debit Authorization"
+    description: "Nacha Operating Rules (Art Two): valid, retained authorization for debit entries"
+    severity: "high"
+    patterns:
+      - "debit.?authoriz|ach.?authoriz|standing.?authoriz|written.?authoriz|revoke.?authoriz"
+
+  - id: "WIRE-RTP"
+    category: "HighValue-Transfers"
+    name: "Wire / RTP Controls"
+    description: "Fedwire (Reg J / 12 CFR 210 Subpart B, OC 6) and RTP (TCH RTP Operating Rules): validation and limits on high-value real-time transfers"
+    severity: "high"
+    patterns:
+      - "fedwire|\\brtp\\b|real.?time.?payment|wire.?transfer|\\bfednow\\b"
+
+  - id: "REGE-1005"
+    category: "Consumer-Protection"
+    name: "Regulation E Error Resolution"
+    description: "Reg E: error resolution (12 CFR 1005.11) and unauthorized-transfer liability (12 CFR 1005.6)"
+    severity: "medium"
+    patterns:
+      - "error.?resolution|unauthoriz.*(transfer|transaction)|\\bdispute\\b|provisional.?credit"

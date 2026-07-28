@@ -121,6 +121,9 @@ class RiskClassifier:
         "soc2": "soc2-controls",
         "hipaa": "hipaa-safeguards",
         "pci-dss": "pci-dss-requirements",
+        "psd2": "psd2-sca-requirements",
+        "dora": "dora-ict-requirements",
+        "nacha": "nacha-us-payments-requirements",
     }
 
     DEFAULT_ZONE_SEVERITY = {
