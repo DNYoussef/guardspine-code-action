@@ -41,13 +41,13 @@ from pathlib import Path
 
 import pytest
 import yaml
+from guardspine_prompts import format_rubric_context
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from src.risk_classifier import RiskClassifier
-from src.rubric_context import format_rubric_context
 
 
 def _rubric(rules, name="testpack"):
@@ -133,13 +133,9 @@ def test_a_broken_pattern_is_reported(capsys):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.xfail(
-    reason="Renderer-dependent, and deliberately deferred. Exceptions are "
-           "rendered by format_rubric_context, which this repo carries as a "
-           "VENDORED copy of the canonical implementation in GuardSpine, "
-           "pinned byte-for-byte by a shared golden vector. Changing it here "
-           "alone would break that gate; changing it correctly is a three-repo "
-           "edit that belongs with phases 4-5, where the renderer is unified "
-           "and published once. Flip this when that lands.",
+    reason="Renderer-dependent, and deliberately deferred. Fix exceptions in "
+           "guardspine-prompts, then bump this package pin. Flip this when "
+           "that release lands.",
     strict=True,
 )
 def test_the_models_are_told_which_files_a_rule_excludes():

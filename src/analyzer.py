@@ -20,14 +20,13 @@ import concurrent.futures
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field, fields as dataclass_fields
+from guardspine_prompts import format_rubric_context
 from unidiff import PatchSet
 
 try:  # works both as a package (src.analyzer) and top-level (analyzer)
     from .secret_detector import detect as detect_secrets
-    from .rubric_context import format_rubric_context
 except ImportError:  # pragma: no cover - import-path shim for test layout
     from secret_detector import detect as detect_secrets
-    from rubric_context import format_rubric_context
 
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"

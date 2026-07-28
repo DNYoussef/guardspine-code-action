@@ -10,6 +10,7 @@ unidiff>=0.7.5
 # Evidence bundle generation
 cryptography>=41.0
 guardspine-kernel>=2.0.0
+guardspine-prompts==0.1.0
 
 # Optional AI backends (used if API keys provided)
 openai>=1.0.0
