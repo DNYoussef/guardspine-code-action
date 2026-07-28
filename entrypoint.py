@@ -254,23 +254,13 @@ def _bundle_sync_failed(import_result) -> bool:
     return not (isinstance(import_result, dict) and import_result.get("verified") is True)
 
 
-def _base_ref_config_packs(workspace: Path) -> list[str]:
-    """Read rubric_packs from .guardspine/config.yml AS OF THE BASE REF.
-
-    Governance config must not be PR-controlled. actions/checkout leaves the PR
-    head in the workspace, so reading the file from disk would let a PR ship a
-    pack that matches nothing, point rubric_packs at it, and be judged by a
-    policy it wrote for itself (verified: zero findings on obvious payment code).
-
-    Reads the base ref's copy via git instead. If the base ref is unavailable
-    (not a PR, or a shallow clone without it), returns [] -- the scan falls back
-    to the workflow's `rubric:` input rather than trusting the PR's copy.
-    """
+def _base_ref_file(workspace: Path, path: str) -> tuple[Optional[str], Optional[str], list[str]]:
+    """Read a repository file from the PR base ref, not the checkout."""
     import subprocess
 
     base_ref = get_env("GITHUB_BASE_REF")
     if not base_ref:
-        return []  # not a pull_request event; nothing to compare against
+        return None, None, []
 
     failures: list[str] = []
     for ref in (f"origin/{base_ref}", base_ref):
@@ -284,19 +274,38 @@ def _base_ref_config_packs(workspace: Path) -> list[str]:
                 # the default pack, which is the failure this whole path
                 # exists to prevent. Read-only command against a checkout the
                 # runner already made; nothing further is being trusted.
-                ["git", "-c", f"safe.directory={workspace}", "show",
-                 f"{ref}:.guardspine/config.yml"],
+                ["git", "-c", f"safe.directory={workspace}", "show", f"{ref}:{path}"],
                 cwd=str(workspace), capture_output=True, text=True, timeout=15,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"{ref}: {exc}")
             continue
         if result.returncode == 0:
-            packs = RiskClassifier.parse_config_packs(result.stdout)
-            if packs:
-                print(f"Rubric packs (from base ref {ref}): {', '.join(packs)}")
-            return packs
+            return result.stdout, ref, failures
         failures.append(f"{ref}: {result.stderr.strip() or f'exit {result.returncode}'}")
+    return None, None, failures
+
+
+def _base_ref_config_packs(workspace: Path) -> list[str]:
+    """Read rubric_packs from .guardspine/config.yml AS OF THE BASE REF.
+
+    Governance config must not be PR-controlled. actions/checkout leaves the PR
+    head in the workspace, so reading the file from disk would let a PR ship a
+    pack that matches nothing, point rubric_packs at it, and be judged by a
+    policy it wrote for itself (verified: zero findings on obvious payment code).
+
+    Reads the base ref's copy via git instead. If the base ref is unavailable
+    (not a PR, or a shallow clone without it), returns [] -- the scan falls back
+    to the workflow's `rubric:` input rather than trusting the PR's copy.
+    """
+    config_text, ref, failures = _base_ref_file(workspace, ".guardspine/config.yml")
+    if config_text is not None:
+        packs = RiskClassifier.parse_config_packs(config_text)
+        if packs:
+            print(f"Rubric packs (from base ref {ref}): {', '.join(packs)}")
+        return packs
+    if not get_env("GITHUB_BASE_REF"):
+        return []  # not a pull_request event; nothing to compare against
 
     # Say WHY it failed. The first version of this warning did not, so a git
     # ownership refusal was indistinguishable from a repo that has no config.
@@ -306,6 +315,79 @@ def _base_ref_config_packs(workspace: Path) -> list[str]:
         + " | ".join(failures)
     )
     return []
+
+
+def _trusted_rubric_path(
+    workspace: Path, rubric: str, rubrics_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Resolve a rubric from the base ref on PRs, otherwise from the workspace."""
+    if not get_env("GITHUB_BASE_REF"):
+        bases = [workspace]
+        if rubrics_dir:
+            bases.append(rubrics_dir)
+        return resolve_existing_file(rubric, bases=bases, extensions=("", ".yaml", ".yml"))
+
+    workspace = workspace.resolve()
+    candidate = Path(rubric)
+    roots = [workspace]
+    if rubrics_dir:
+        rubrics_dir = Path(rubrics_dir)
+        roots.append(rubrics_dir if rubrics_dir.is_absolute() else workspace / rubrics_dir)
+    if candidate.is_absolute():
+        roots = [Path(".")]
+
+    failures: list[str] = []
+    seen: set[Path] = set()
+    for root in roots:
+        base = candidate if candidate.is_absolute() else root / candidate
+        for ext in ("", ".yaml", ".yml"):
+            path = base if (not ext or base.suffix) else base.with_suffix(ext)
+            path = path.resolve()
+            if path in seen:
+                continue
+            seen.add(path)
+            try:
+                repo_path = path.relative_to(workspace).as_posix()
+            except ValueError:
+                continue  # external files cannot be a PR's governing policy
+            text, _ref, read_failures = _base_ref_file(workspace, repo_path)
+            if text is None:
+                failures.extend(f"{repo_path} ({failure})" for failure in read_failures)
+                continue
+
+            import atexit
+            import tempfile
+
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=path.suffix or ".yaml", delete=False, encoding="utf-8",
+            ) as trusted_file:
+                trusted_file.write(text)
+            trusted_path = Path(trusted_file.name)
+            atexit.register(trusted_path.unlink, missing_ok=True)
+            return trusted_path
+
+    print(
+        f"::warning::Rubric '{rubric}' is not available from the base ref; "
+        "refusing the PR's copy and falling back to the default rubric. "
+        + " | ".join(failures)
+    )
+    return None
+
+
+def _governing_rubric_path(
+    workspace: Path, rubric: str, rubrics_dir: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return the single trusted rubric path that governs this scan."""
+    workspace = workspace.resolve()
+    discovered = RiskClassifier.discover_builtin_rubrics(workspace)
+    path = discovered.get(rubric)
+    if path:
+        path = path.resolve()
+        shipped_paths = {p.resolve() for p in RiskClassifier.shipped_rubrics().values()}
+        if path in shipped_paths:
+            return path
+        return _trusted_rubric_path(workspace, str(path), rubrics_dir)
+    return _trusted_rubric_path(workspace, rubric, rubrics_dir)
 
 
 def main():
@@ -412,24 +494,14 @@ def main():
         print(f"::error::Risk policy file not found: {risk_policy_path}")
         sys.exit(1)
 
-    rubric_path: Optional[Path] = None
-    builtin_rubrics = RiskClassifier.discover_builtin_rubrics(workspace)
-    builtin_names = RiskClassifier.builtin_names(workspace)
-    if rubric in builtin_rubrics:
-        rubric_path = builtin_rubrics[rubric]
-    elif rubric not in builtin_names:
-        bases = [workspace]
-        if rubrics_dir:
-            bases.append(rubrics_dir)
-        resolved_rubric = resolve_existing_file(
-            rubric,
-            bases=bases,
-            extensions=("", ".yaml", ".yml"),
-        )
-        if not resolved_rubric:
+    rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
+    if not rubric_path:
+        if get_env("GITHUB_BASE_REF"):
+            rubric = "default"
+            rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
+        elif rubric not in RiskClassifier.builtin_names(workspace):
             print(f"::error::Rubric file not found: {rubric}")
             sys.exit(1)
-        rubric_path = resolved_rubric
 
     # GitHub context
     github_event_path = get_env("GITHUB_EVENT_PATH")
