@@ -659,9 +659,6 @@ class DiffAnalyzer:
             preliminary_tier=preliminary_tier,
         )
 
-        # The rules the reviewers are shown. Read by _build_review_prompt.
-        self._rubric_packs = rubric_packs or None
-
         # Apply tier override if provided (e.g., from eval harness)
         effective_tier = tier_override or preliminary_tier
         models_needed = self.TIER_MODEL_COUNT.get(effective_tier, 1)
@@ -673,11 +670,12 @@ class DiffAnalyzer:
             if deliberate and models_needed >= 2:
                 multi_review = self._run_deliberation(
                     model_diff_content, sensitive_zones, rubric, models_needed,
-                    use_rubric, rubric_packs
+                    use_rubric, rubric_packs=rubric_packs
                 )
             else:
                 multi_review = self._run_multi_model_review(
-                    model_diff_content, sensitive_zones, rubric, models_needed, use_rubric
+                    model_diff_content, sensitive_zones, rubric, models_needed,
+                    use_rubric, rubric_packs=rubric_packs
                 )
             result.multi_model_review = multi_review
 
@@ -776,7 +774,8 @@ class DiffAnalyzer:
 
     def _run_multi_model_review(
         self, diff_content: str, sensitive_zones: list,
-        rubric: str, models_needed: int, use_rubric: bool
+        rubric: str, models_needed: int, use_rubric: bool,
+        rubric_packs: list[dict] | None = None,
     ) -> dict:
         """
         Run multiple AI models in parallel for code review.
@@ -798,7 +797,8 @@ class DiffAnalyzer:
 
         # Run reviews in parallel (shared with deliberation path)
         reviews = self._parallel_review(
-            providers, diff_content, sensitive_zones, rubric, use_rubric)
+            providers, diff_content, sensitive_zones, rubric, use_rubric,
+            rubric_packs=rubric_packs)
 
         # Calculate consensus
         failed_reviews = [r for r in reviews if self._review_failed(r)]
@@ -842,7 +842,8 @@ class DiffAnalyzer:
 
         # Round 1: independent parallel review (same prompt as single-pass)
         r1_reviews = self._parallel_review(
-            providers, diff_content, sensitive_zones, rubric, use_rubric)
+            providers, diff_content, sensitive_zones, rubric, use_rubric,
+            rubric_packs=rubric_packs)
         r1_consensus = self._calculate_consensus(r1_reviews, use_rubric)
 
         # Early exit on unanimous high-confidence agreement
@@ -876,6 +877,7 @@ class DiffAnalyzer:
         self, providers: list[tuple[str, str]],
         diff_content: str, sensitive_zones: list,
         rubric: str, use_rubric: bool,
+        rubric_packs: list[dict] | None = None,
     ) -> list[dict]:
         """Run independent reviews in parallel (Round 1)."""
         reviews: list[dict | None] = [None] * len(providers)
@@ -883,7 +885,8 @@ class DiffAnalyzer:
             future_to_provider = {
                 ex.submit(
                     self._get_model_review,
-                    provider, model, diff_content, sensitive_zones, rubric, use_rubric
+                    provider, model, diff_content, sensitive_zones, rubric, use_rubric,
+                    rubric_packs=rubric_packs,
                 ): (idx, provider, model)
                 for idx, (provider, model) in enumerate(providers)
             }
@@ -1060,10 +1063,13 @@ Respond only through the required structured verdict schema:
 
     def _get_model_review(
         self, provider: str, model: str, diff_content: str,
-        sensitive_zones: list, rubric: str, use_rubric: bool
+        sensitive_zones: list, rubric: str, use_rubric: bool,
+        rubric_packs: list[dict] | None = None,
     ) -> dict:
         """Get a single model's review of the diff."""
-        prompt = self._build_review_prompt(diff_content, sensitive_zones, rubric, use_rubric)
+        prompt = self._build_review_prompt(
+            diff_content, sensitive_zones, rubric, use_rubric,
+            rubric_packs=rubric_packs)
         prompt_hash = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
 
         try:
@@ -1111,8 +1117,6 @@ Respond only through the required structured verdict schema:
         """
         rubric_section = ""
         if use_rubric:
-            if rubric_packs is None:
-                rubric_packs = getattr(self, "_rubric_packs", None)
             governance = format_rubric_context(rubric_packs or None)
             rubric_section = f"""
 ## Rubric Evaluation Required
