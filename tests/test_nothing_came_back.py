@@ -58,6 +58,16 @@ ALLOWED_SIBLING_SKIPS = {
         "golden vectors live in guardspine-spec, which is neither a published "
         "package nor checked out in CI"
     ),
+    "e2e_verify.py": (
+        "needs a guardspine-verify executable, which the installed "
+        "guardspine-kernel does not provide (it ships no console scripts). "
+        "Doubly inert: the filename does not match pytest's test_*.py pattern, "
+        "so the normal suite never collects it at all -- this probe only sees "
+        "it because it names the file explicitly. Renaming it to "
+        "test_e2e_verify.py would activate a test that then skips, which is "
+        "worse than leaving it visibly dormant. Fixing it means shipping or "
+        "installing the verifier, which is a decision, not a rename."
+    ),
 }
 
 
