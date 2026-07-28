@@ -689,7 +689,7 @@ def main():
                 if pii_shield_fail_closed:
                     sys.exit(1)
         try:
-            commenter.post_decision_card(comment_body)
+            commenter.post_decision_card(comment_body, analysis.get("review_coverage"))
             print("Decision Card posted")
         except Exception as exc:
             print(f"::warning::Failed to post PR comment (check GITHUB_TOKEN permissions): {exc}")

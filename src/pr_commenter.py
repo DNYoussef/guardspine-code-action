@@ -46,7 +46,8 @@ class PRCommenter:
         risk_drivers: list[dict],
         findings: list[dict],
         requires_approval: bool,
-        threshold: str = "L3"
+        threshold: str = "L3",
+        review_coverage: dict | None = None,
     ) -> None:
         """
         Post or update the GuardSpine summary comment.
@@ -63,7 +64,8 @@ class PRCommenter:
             risk_drivers=risk_drivers,
             findings=findings,
             requires_approval=requires_approval,
-            threshold=threshold
+            threshold=threshold,
+            review_coverage=review_coverage,
         )
 
         # Check for existing comment to update
@@ -107,7 +109,8 @@ class PRCommenter:
         risk_drivers: list[dict],
         findings: list[dict],
         requires_approval: bool,
-        threshold: str
+        threshold: str,
+        review_coverage: dict | None = None,
     ) -> str:
         """Build the 5-section governance comment.
 
@@ -181,8 +184,11 @@ class PRCommenter:
             f"- Evidence bundle: {'Generated' if total > 0 else 'N/A'} (available in workflow artifacts)",
             f"- Risk drivers: {len(risk_drivers)}",
             f"- Findings: {critical_count} critical, {high_count} high, {total - critical_count - high_count} other",
-            "",
         ])
+        coverage_note = self._coverage_note(review_coverage)
+        if coverage_note:
+            lines.append(f"- {coverage_note}")
+        lines.append("")
 
         # === SECTION D: Merge Posture ===
         if requires_approval:
@@ -234,7 +240,17 @@ class PRCommenter:
             "info": ":white_circle:",
         }.get(severity, ":white_circle:")
 
-    def post_decision_card(self, decision_card_md: str) -> None:
+    @staticmethod
+    def _coverage_note(review_coverage: dict | None) -> str:
+        if not review_coverage or review_coverage.get("complete", True):
+            return ""
+        return ("**Model review coverage incomplete:** "
+                f"{review_coverage.get('succeeded', 0)} of "
+                f"{review_coverage.get('attempted', 0)} models reviewed")
+
+    def post_decision_card(
+        self, decision_card_md: str, review_coverage: dict | None = None
+    ) -> None:
         """
         Post or update the Decision Card comment.
 
@@ -242,6 +258,9 @@ class PRCommenter:
             decision_card_md: Pre-rendered markdown from render_decision_card()
         """
         body = f"{self.COMMENT_MARKER}\n\n{decision_card_md}"
+        coverage_note = self._coverage_note(review_coverage)
+        if coverage_note:
+            body += f"\n\n> {coverage_note}"
 
         existing = self._find_existing_comment()
         if existing:

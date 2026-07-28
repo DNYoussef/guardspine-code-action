@@ -257,6 +257,7 @@ class BundleGenerator:
                 "models_used": analysis.get("models_used", 0),
                 "models_failed": analysis.get("models_failed", 0),
                 "model_errors": analysis.get("model_errors", []),
+                "review_coverage": analysis.get("review_coverage"),
                 "raw_diff_hash": raw_diff_hash,
                 "analysis_diff_hash": analysis_diff_hash,
                 "pii_shield": pii_shield,
@@ -264,6 +265,8 @@ class BundleGenerator:
             },
             "signatures": [],
         }
+        if analysis.get("review_coverage") is None:
+            bundle["analysis_snapshot"].pop("review_coverage")
 
         # Seal as the final step: whole-bundle hash + optional signature.
         self.seal_bundle(
