@@ -317,3 +317,83 @@ def test_customer_content_does_not_leave_the_customers_ci(tmp_path):
     text = _bundle_text(analysis, risk, tmp_path)
     for content in CUSTOMER_CONTENT:
         assert content not in text
+
+
+# ---------------------------------------------------------------------------
+# The reviewer must actually be TOLD
+#
+# Added after auditing the first implementation, which satisfied every probe
+# above by removing the outage finding -- and then rendered nothing in its
+# place. Coverage was computed and stored where only a machine could see it, so
+# a total provider outage produced a clean-looking verdict with no indication
+# that every model had failed. The mislabelled finding it replaced was wrong,
+# but it at least told the reviewer something.
+#
+# This is the same both-ways contract already applied to model prose. Removing
+# a bad disclosure is only half the job; the other half is the honest one.
+# ---------------------------------------------------------------------------
+
+def test_the_comment_tells_the_reviewer_when_coverage_was_incomplete():
+    from src.pr_commenter import PRCommenter
+
+    commenter = PRCommenter.__new__(PRCommenter)
+    body = PRCommenter._build_comment(
+        commenter,
+        risk_tier="L3",
+        risk_drivers=[],
+        findings=[],
+        requires_approval=True,
+        threshold="L3",
+        review_coverage={
+            "attempted": 3, "succeeded": 0, "failed": 3, "complete": False,
+            "failures": [{"provider": "openrouter", "error_type": "RuntimeError"}],
+        },
+    )
+    assert "0 of 3" in body or ("0" in body and "3" in body and "model" in body.lower()), (
+        "a total outage renders a comment that says nothing about coverage"
+    )
+    for secret in OUR_SECRETS:
+        assert secret not in body
+
+
+def test_the_comment_stays_quiet_when_coverage_is_complete():
+    """No noise on the happy path -- a coverage line on every clean review
+    trains reviewers to ignore it."""
+    from src.pr_commenter import PRCommenter
+
+    commenter = PRCommenter.__new__(PRCommenter)
+    body = PRCommenter._build_comment(
+        commenter,
+        risk_tier="L2", risk_drivers=[], findings=[],
+        requires_approval=False, threshold="L3",
+        review_coverage={"attempted": 3, "succeeded": 3, "failed": 0,
+                         "complete": True, "failures": []},
+    )
+    assert "incomplete" not in body.lower()
+
+
+def test_attempted_counts_models_not_model_rounds():
+    """Deliberation runs the same models several times. Counting each round as
+    an attempt reported 'attempted: 9' for three models, contradicting
+    models_used: 3 in the same result -- an inflated coverage number in a
+    product whose entire claim is that it does not overclaim."""
+    # Models must DISAGREE or deliberation early-exits after one round and the
+    # bug cannot appear. An earlier version of this probe used three identical
+    # responses and passed while the defect was live.
+    def _verdict(risk):
+        def behave(_p, _m):
+            return _valid_response(SENTINEL_SUMMARY, SENTINEL_CONCERN).replace(
+                '"risk_assessment": "request_changes"', f'"risk_assessment": "{risk}"'
+            ), {"model_id": "m"}
+        return behave
+
+    analyzer = _analyzer([_verdict("approve"), _verdict("request_changes"), _verdict("comment")])
+    analysis = analyzer.analyze(
+        DIFF, rubric="default", tier_override="L3", deliberate=True,
+    )
+    coverage = analysis.get("review_coverage") or {}
+    assert coverage.get("attempted") == analysis.get("models_used", 0) + analysis.get("models_failed", 0), (
+        f"coverage.attempted={coverage.get('attempted')} contradicts "
+        f"models_used={analysis.get('models_used')} + "
+        f"models_failed={analysis.get('models_failed')} in the same result"
+    )
