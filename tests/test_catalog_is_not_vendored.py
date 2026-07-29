@@ -118,15 +118,42 @@ def test_a_pack_the_dashboard_sells_actually_loads(pack):
     )
 
 
+# Packs that ship but compile nothing. Known, deliberate, and priced FREE for
+# exactly that reason -- not a consequence of the catalogue move. Named
+# individually so a NEW dead pack fails this gate instead of blending in.
+KNOWN_NON_LOADING = {
+    "six-sigma": (
+        "declares 15 rules, compiles 0. Predates this change; the monorepo "
+        "prices it free with that same note, and its own "
+        "test_no_paid_tier_sells_a_pack_that_does_not_fully_run stops it "
+        "being sold. Fixing the rules is a separate job."
+    ),
+}
+
+
 def test_the_whole_catalogue_loads():
     """Every pack the package ships must be loadable here. A pack that ships
-    but cannot load is the same lie in a new place."""
+    but cannot load is the same lie in a new place: it would resolve to
+    nothing and let the scan fall back to `default`."""
     broken = []
     for path in sorted(_catalog_dir().glob("*.yaml")):
+        if path.stem in KNOWN_NON_LOADING:
+            continue
         rc = RiskClassifier(rubric=path.stem)
         if not rc.rubric_rules:
             broken.append(path.stem)
     assert not broken, f"packs that ship but load nothing: {broken}"
+
+
+def test_the_known_dead_pack_is_still_dead_and_still_named():
+    """The allowlist above must not outlive its reason. If six-sigma starts
+    compiling, this fails and the exemption gets deleted rather than quietly
+    covering a pack that no longer needs it."""
+    for pack in KNOWN_NON_LOADING:
+        rc = RiskClassifier(rubric=pack)
+        assert not rc.rubric_rules, (
+            f"{pack} now compiles rules -- remove it from KNOWN_NON_LOADING"
+        )
 
 
 def test_the_short_aliases_still_resolve():

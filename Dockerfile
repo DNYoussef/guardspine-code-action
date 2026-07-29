@@ -27,7 +27,6 @@ RUN cp /usr/lib/*-linux-gnu/libpcre2-8.so* /staging/usr/lib/ 2>/dev/null; true
 
 COPY src/ /staging/action/src/
 COPY lib/pii-shield.wasm /staging/action/lib/pii-shield.wasm
-COPY rubrics/ /staging/action/rubrics/
 COPY entrypoint.py /staging/action/
 
 # --- Single layer on top of base ---
