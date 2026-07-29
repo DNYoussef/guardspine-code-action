@@ -81,6 +81,17 @@ class TestEntrypointPIIShield(unittest.TestCase):
                     return {}
 
                 @staticmethod
+                def shipped_rubrics():
+                    # Stands in for RiskClassifier at the rubric-resolution
+                    # seam. It must agree with builtin_names() above: claiming
+                    # `default` is a builtin while reporting NO shipped packs
+                    # sends a shipped name down the base-ref path, which is
+                    # fatal once a PR sets GITHUB_BASE_REF.
+                    from guardspine_prompts import rubric_paths
+
+                    return {"default": rubric_paths()["default"]}
+
+                @staticmethod
                 def builtin_names(_repo_root):
                     return {"default"}
 
@@ -236,6 +247,17 @@ class TestFailOpenOnNonNetworkError(unittest.TestCase):
                 @staticmethod
                 def discover_builtin_rubrics(_rr):
                     return {}
+
+                @staticmethod
+                def shipped_rubrics():
+                    # Stands in for RiskClassifier at the rubric-resolution
+                    # seam. It must agree with builtin_names() above: claiming
+                    # `default` is a builtin while reporting NO shipped packs
+                    # sends a shipped name down the base-ref path, which is
+                    # fatal once a PR sets GITHUB_BASE_REF.
+                    from guardspine_prompts import rubric_paths
+
+                    return {"default": rubric_paths()["default"]}
                 @staticmethod
                 def builtin_names(_rr):
                     return {"default"}
@@ -352,11 +374,25 @@ def _make_stubs():
         @staticmethod
         def discover_builtin_rubrics(_rr):
             return {}
+
+        @staticmethod
+        def shipped_rubrics():
+            # Stands in for RiskClassifier at the rubric-resolution
+            # seam. It must agree with builtin_names() above: claiming
+            # `default` is a builtin while reporting NO shipped packs
+            # sends a shipped name down the base-ref path, which is
+            # fatal once a PR sets GITHUB_BASE_REF.
+            from guardspine_prompts import rubric_paths
+
+            return {"default": rubric_paths()["default"]}
         @staticmethod
         def builtin_names(_rr):
             return {"default"}
         def __init__(self, *a, **kw):
-            pass
+            self.requested_config_packs = []
+            self.loaded_config_packs = []
+            self.skipped_config_packs = {}
+            self.fallback_applied = False
         def rubric_prompt_packs(self):
             # No packs: these probes are about PII sanitization,
             # and an empty list leaves the prompt free of a
@@ -505,6 +541,17 @@ class TestSARIFSanitizationPath(unittest.TestCase):
             @staticmethod
             def discover_builtin_rubrics(_rr):
                 return {}
+
+            @staticmethod
+            def shipped_rubrics():
+                # Must agree with builtin_names() below: claiming `default` is
+                # a builtin while reporting no shipped packs sends a shipped
+                # name down the base-ref path, fatal once GITHUB_BASE_REF is
+                # set (which every pull_request run does).
+                from guardspine_prompts import rubric_paths
+
+                return {"default": rubric_paths()["default"]}
+
             @staticmethod
             def builtin_names(_rr):
                 return {"default"}

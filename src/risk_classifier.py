@@ -94,29 +94,6 @@ class RiskClassifier:
         ],
     }
 
-    # Legacy built-in rules used as fallback when rubric YAML files are unavailable.
-    LEGACY_RUBRICS = {
-        "default": {},
-        "soc2": {
-            "CC6.1": {"pattern": r"(auth|access|permission)", "severity": "high", "message": "Change management control affected"},
-            "CC6.2": {"pattern": r"(user|account|provision)", "severity": "medium", "message": "Access provisioning affected"},
-            "CC7.1": {"pattern": r"(CVE|vulnerab|patch|security)", "severity": "critical", "message": "Vulnerability management"},
-            "CC8.1": {"pattern": r"(terraform|kubernetes|docker|infra)", "severity": "high", "message": "Infrastructure change"},
-        },
-        "hipaa": {
-            "164.312.a": {"pattern": r"(phi|patient|medical|health)", "severity": "critical", "message": "PHI access control affected"},
-            "164.312.b": {"pattern": r"(audit|log|trail)", "severity": "high", "message": "Audit control affected"},
-            "164.312.e": {"pattern": r"(encrypt|tls|ssl|https)", "severity": "critical", "message": "Transmission security"},
-        },
-        "pci-dss": {
-            "3.4": {"pattern": r"(pan|card.number|credit)", "severity": "critical", "message": "Cardholder data handling"},
-            "6.5": {"pattern": r"(sql|inject|xss|csrf)", "severity": "critical", "message": "Secure coding requirement"},
-            "8.3": {"pattern": r"(password|mfa|auth)", "severity": "high", "message": "Authentication control"},
-        },
-    }
-    # Backward-compatible alias used by older tests/callers.
-    RUBRICS = LEGACY_RUBRICS
-
     # Backward-compatible name for the catalogue package's canonical aliases.
     BUILTIN_ALIASES = RUBRIC_ALIASES
 
@@ -173,7 +150,13 @@ class RiskClassifier:
         # the workspace: actions/checkout gives us the PR head, so a PR could
         # otherwise ship a one-rule pack that matches nothing, point the config
         # at it, and be judged by a policy it wrote for itself.
-        self.config_packs: list[str] = [] if rubric_explicit else list(config_packs or [])
+        self.requested_config_packs = list(config_packs or [])
+        self.config_packs: list[str] = (
+            [] if rubric_explicit else list(self.requested_config_packs)
+        )
+        self.loaded_config_packs: list[str] = []
+        self.skipped_config_packs: dict[str, str] = {}
+        self.fallback_applied = bool(rubric_explicit and self.requested_config_packs)
 
         if not self.rubric_path:
             self.rubric_path = self._resolve_rubric_path(rubric)
@@ -318,10 +301,14 @@ class RiskClassifier:
 
     @classmethod
     def builtin_names(cls, repo_root: str | Path | None = None) -> set[str]:
-        """Return all known built-in rubric names (discovered + legacy)."""
-        names = set(cls.LEGACY_RUBRICS.keys())
-        names.update(cls.discover_builtin_rubrics(repo_root).keys())
-        return names
+        """Return all known built-in rubric names.
+
+        Formerly unioned a hardcoded LEGACY_RUBRICS table. That table also
+        supplied STUB RULES labelled with real control ids when a pack's YAML
+        was missing, so it has been deleted; the shipped catalogue supplies
+        every name it used to cover, aliases included.
+        """
+        return set(cls.discover_builtin_rubrics(repo_root).keys())
 
     def _resolve_rubric_path(self, rubric: str) -> Path | None:
         """Resolve rubric name/path to a concrete YAML file path when available."""
@@ -498,28 +485,6 @@ class RiskClassifier:
             })
         return list(packs.values())
 
-    def _load_legacy_rubric_rules(self) -> tuple[list[dict], list[str]]:
-        """Fallback rules for a builtin name with no shipped YAML."""
-        rules: list[dict] = []
-        errors: list[str] = []
-        for rid, rule in self.LEGACY_RUBRICS.get(self.rubric, {}).items():
-            try:
-                compiled = re.compile(rule["pattern"], re.IGNORECASE)
-            except Exception as exc:
-                errors.append(f"Rule {rid} skipped: {exc}")
-                compiled = None
-            rules.append({
-                "id": rid,
-                "severity": normalize_severity(rule.get("severity", "medium")),
-                "message": rule.get("message", "Policy rule triggered"),
-                "pattern": rule.get("pattern", ""),
-                "compiled": compiled,
-                "compiled_patterns": [compiled] if compiled else [],
-                "evaluator_eligible": bool(compiled),
-                "reviewer_eligible": bool(compiled),
-                "source_pack": self.rubric,
-            })
-        return rules, errors
 
     def _load_rubric_rules(self) -> tuple[list[dict], list[str]]:
         """Load rubric rules from a config.yml pack list, a file, or built-ins.
@@ -550,6 +515,7 @@ class RiskClassifier:
                     f"falling back to rubric {self.rubric!r}"
                 )
                 self.config_packs = []
+                self.fallback_applied = True
                 fallback, fallback_errors = self._load_configured_rubric()
                 rules, errors = fallback, errors + fallback_errors
         else:
@@ -565,7 +531,13 @@ class RiskClassifier:
         """Load the single rubric named by the `rubric:` input (pre-pack path)."""
         if self.rubric_path:
             return self._parse_rubric_file(self.rubric_path, source_pack=self.rubric)
-        return self._load_legacy_rubric_rules()
+        # No YAML for this name. Previously this substituted three hardcoded
+        # regexes carrying real control ids, so a scan could cite HIPAA
+        # 164.312.a while the actual pack never loaded. Emit nothing and say so.
+        return [], [
+            f"Rubric {self.rubric!r} has no shipped definition; no rules were "
+            "loaded. It must not be reported as governing this scan."
+        ]
 
     # A committed config is attacker-controlled (anyone who can open a PR can
     # edit it), so a pack name must never become an arbitrary filesystem read.
@@ -625,18 +597,23 @@ class RiskClassifier:
         for pack in packs:
             path = self._resolve_pack_path(pack)
             if path is None:
-                errors.append(
+                reason = (
                     f"Rubric pack {pack!r} from .guardspine/config.yml is not a "
                     "pack shipped with this Action; skipped. (Repo-local rubric "
                     "files are not selectable here -- point the workflow's "
                     "`rubric:` input at one instead.)"
                 )
+                self.skipped_config_packs[pack] = reason
+                errors.append(reason)
                 continue
             try:
                 pack_rules, pack_errors = self._parse_rubric_file(path, source_pack=pack)
             except (OSError, ValueError) as exc:
-                errors.append(f"Rubric pack {pack!r} failed to load: {exc}")
+                reason = f"Rubric pack {pack!r} failed to load: {exc}"
+                self.skipped_config_packs[pack] = reason
+                errors.append(reason)
                 continue
+            self.loaded_config_packs.append(pack)
             errors.extend(pack_errors)
             rules.extend(pack_rules)
 

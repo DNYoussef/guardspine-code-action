@@ -25,7 +25,7 @@ from github.PullRequest import PullRequest
 
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
-from src.bundle_generator import BundleGenerator
+from src.bundle_generator import BundleGenerator, build_governance_record
 from src.pr_commenter import PRCommenter
 from src.sarif_exporter import SARIFExporter
 from src.pii_shield import PIIShieldClient, PIIShieldError
@@ -254,6 +254,14 @@ def _bundle_sync_failed(import_result) -> bool:
     return not (isinstance(import_result, dict) and import_result.get("verified") is True)
 
 
+class RubricUnavailableError(RuntimeError):
+    """The configured rubric cannot be resolved from a trusted source.
+
+    Raised rather than returning None so the scan stops instead of silently
+    governing with a different policy. See the fail-closed gate in
+    tests/test_rubric_resolution_fails_closed.py.
+    """
+
 def _base_ref_file(workspace: Path, path: str) -> tuple[Optional[str], Optional[str], list[str]]:
     """Read a repository file from the PR base ref, not the checkout."""
     import subprocess
@@ -366,12 +374,18 @@ def _trusted_rubric_path(
             atexit.register(trusted_path.unlink, missing_ok=True)
             return trusted_path
 
-    print(
-        f"::warning::Rubric '{rubric}' is not available from the base ref; "
-        "refusing the PR's copy and falling back to the default rubric. "
+    raise RubricUnavailableError(
+        f"Rubric '{rubric}' is not available from the base ref, so it "
+        "cannot govern this scan. Refusing the PR's copy is deliberate: a "
+        "pull request must not supply the policy that reviews it. "
+        "Fix: merge the rubric to the default branch first, then it governs "
+        "every later PR -- governance changes by being merged, the same rule "
+        "the rubric_packs list already follows. "
+        "This previously fell back to the default rubric and exited green, "
+        "so five generic rules governed the change while the config named "
+        "something else. "
         + " | ".join(failures)
     )
-    return None
 
 
 def _governing_rubric_path(
@@ -379,6 +393,22 @@ def _governing_rubric_path(
 ) -> Optional[Path]:
     """Return the single trusted rubric path that governs this scan."""
     workspace = workspace.resolve()
+
+    # A pack that SHIPS in the image is not repo content, so the base ref has
+    # nothing to say about it -- resolve it by NAME, before any git read.
+    #
+    # This used to be inferred by discovering the name and then checking the
+    # discovered path against the shipped set. That works only while discovery
+    # succeeds; when it does not (packaging hiccup, or a stubbed classifier),
+    # a shipped name fell through to the base-ref path. Harmless while that
+    # path degraded to `default`; fatal once it raises. CI caught exactly this:
+    # `default` failing with "not a git repository" on a workspace that is not
+    # a repo. The most common rubric in the product must not depend on a git
+    # read to resolve.
+    shipped = RiskClassifier.shipped_rubrics()
+    if rubric in shipped:
+        return shipped[rubric]
+
     discovered = RiskClassifier.discover_builtin_rubrics(workspace)
     path = discovered.get(rubric)
     if path:
@@ -494,14 +524,14 @@ def main():
         print(f"::error::Risk policy file not found: {risk_policy_path}")
         sys.exit(1)
 
+    # On a pull request an unresolvable rubric raises RubricUnavailableError
+    # (caught at the boundary below) instead of returning None, so there is no
+    # longer a "fall back to default" branch here -- governing with a policy
+    # the config did not name is the defect that change removed.
     rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
-    if not rubric_path:
-        if get_env("GITHUB_BASE_REF"):
-            rubric = "default"
-            rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
-        elif rubric not in RiskClassifier.builtin_names(workspace):
-            print(f"::error::Rubric file not found: {rubric}")
-            sys.exit(1)
+    if not rubric_path and rubric not in RiskClassifier.builtin_names(workspace):
+        print(f"::error::Rubric file not found: {rubric}")
+        sys.exit(1)
 
     # GitHub context
     github_event_path = get_env("GITHUB_EVENT_PATH")
@@ -803,6 +833,7 @@ def main():
             attestation_key=attestation_key,
             attestation_key_id=attestation_key_id,
             id_nonce=bundle_id_nonce,
+            governance=build_governance_record(classifier, rubric_input=rubric),
         )
 
         if sanitization_summary:
@@ -1172,4 +1203,13 @@ def set_output(name: str, value: str):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RubricUnavailableError as exc:
+        # A deliberate refusal, not a crash. Surfaced as a GitHub error
+        # annotation with a chosen exit code so the customer sees the reason
+        # and the remedy rather than a stack trace.
+        for line in str(exc).splitlines():
+            if line.strip():
+                print(f"::error::{line.strip()}")
+        sys.exit(1)

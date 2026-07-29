@@ -129,11 +129,16 @@ def test_a_pr_cannot_swap_the_rubric_that_reviews_it(tmp_path, monkeypatch):
 def test_a_pr_cannot_introduce_a_rubric_to_govern_itself(tmp_path, monkeypatch, capsys):
     """Absent on the base ref, present in the PR. Proposing is fine; being
     judged by your own proposal is not."""
+    import entrypoint
+
     repo = _repo_with(tmp_path, None, PERMISSIVE)
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
 
-    resolved = _resolve(repo, "rubrics/policy.yaml")
-    assert "HEAD-PERMISSIVE-1" not in _rules_at(resolved)
+    # The refusal is now fatal rather than a fallback to `default`: the PR's
+    # rubric cannot govern because nothing governs, and the scan stops.
+    with pytest.raises(entrypoint.RubricUnavailableError) as exc:
+        _resolve(repo, "rubrics/policy.yaml")
+    assert "HEAD-PERMISSIVE-1" not in str(exc.value)
 
 
 def test_the_refusal_is_loud(tmp_path, monkeypatch, capsys):
@@ -142,11 +147,13 @@ def test_the_refusal_is_loud(tmp_path, monkeypatch, capsys):
     repo = _repo_with(tmp_path, None, PERMISSIVE)
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
 
-    _resolve(repo, "rubrics/policy.yaml")
-    out = capsys.readouterr().out + capsys.readouterr().err
-    assert "warning" in out.lower() or "::warning::" in out, (
-        "the rubric was refused with nothing said about it"
-    )
+    import entrypoint
+
+    with pytest.raises(entrypoint.RubricUnavailableError) as exc:
+        _resolve(repo, "rubrics/policy.yaml")
+    msg = str(exc.value)
+    assert "rubrics/policy.yaml" in msg, "the refusal does not name the rubric"
+    assert "merge" in msg.lower(), "the refusal does not say how to fix it"
 
 
 def test_a_rubrics_dir_is_not_a_way_around_it(tmp_path, monkeypatch):
@@ -193,8 +200,12 @@ def test_a_shipped_pack_name_is_not_affected(tmp_path, monkeypatch):
     builtins = RiskClassifier.builtin_names(repo)
     assert "security" in builtins or "default" in builtins
 
-    resolved = _resolve(repo, "security")
-    assert resolved is None or "HEAD-PERMISSIVE-1" not in _rules_at(resolved)
+    # Through _governing_rubric_path, the entry point production uses: shipped
+    # packs are returned before the base-ref check, so making that check fatal
+    # cannot break `rubric: security` on a PR.
+    resolved = _governing(repo, "security")
+    assert resolved is not None, "a shipped pack stopped resolving on a PR"
+    assert "HEAD-PERMISSIVE-1" not in _rules_at(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -234,8 +245,11 @@ def test_a_pr_cannot_plant_a_rubric_in_the_builtin_directory(tmp_path, monkeypat
     planted.write_text(yaml.dump(PERMISSIVE), encoding="utf-8")
     monkeypatch.setenv("GITHUB_BASE_REF", "main")
 
-    resolved = _governing(repo, "sneaky")
-    assert "HEAD-PERMISSIVE-1" not in _rules_at(resolved), (
+    import entrypoint
+
+    with pytest.raises(entrypoint.RubricUnavailableError) as exc:
+        _governing(repo, "sneaky")
+    assert "HEAD-PERMISSIVE-1" not in str(exc.value), (
         "a rubric the PR added under rubrics/builtin/ governed the PR that "
         "added it -- the base-ref check was bypassed by directory choice"
     )
