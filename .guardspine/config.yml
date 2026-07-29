@@ -5,8 +5,13 @@ api_url: https://api.guardspine.ai/api/v1
 project_id: proj-f7ea91e4986d
 
 rubric_packs:
-  - security-baseline
-  - pii-shield
+  # `security-baseline` and `pii-shield` are not packs -- neither name exists in
+  # the catalogue, and pii-shield is the WASM redaction FEATURE, configured on
+  # the action step. Every scan of this repo therefore fell back to `default`
+  # while the config claimed otherwise. Same defect found in the monorepo's own
+  # config; these are the real packs closest to the evident intent.
+  - security
+  - gdpr-privacy-by-design
 
 evidence:
   upload: true
