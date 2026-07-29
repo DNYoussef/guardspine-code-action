@@ -24,6 +24,6 @@ jobs:
           rubric: default
           github_token: ${{ github.token }}
           guardspine_api_key: ${{ secrets.GUARDSPINE_API_KEY }}
-          guardspine_api_url: https://api.guardspine.dev
+          guardspine_api_url: https://api.guardspine.ai/api/v1
           post_comment: "true"
           generate_bundle: "true"
