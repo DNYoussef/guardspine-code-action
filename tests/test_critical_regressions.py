@@ -18,6 +18,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from guardspine_prompts import rubric_dir
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
@@ -38,7 +40,7 @@ class TestActionSupplyChainRegressions(unittest.TestCase):
 
 class TestRubricSchemaCompatibility(unittest.TestCase):
     def test_builtin_security_rubric_with_patterns_is_compiled(self):
-        rubric_path = ROOT / "rubrics" / "builtin" / "security.yaml"
+        rubric_path = Path(rubric_dir()) / "security.yaml"
         classifier = RiskClassifier(rubric="custom", rubric_path=rubric_path)
         compiled = [r for r in classifier.rubric_rules if r.get("compiled")]
         self.assertGreater(

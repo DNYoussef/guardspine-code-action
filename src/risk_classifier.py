@@ -16,6 +16,7 @@ from typing import Any, TYPE_CHECKING
 from dataclasses import dataclass
 
 import yaml
+from guardspine_prompts import RUBRIC_ALIASES, rubric_dir
 
 try:
     from .severity import normalize_severity, severity_rank, validate_severity
@@ -116,15 +117,8 @@ class RiskClassifier:
     # Backward-compatible alias used by older tests/callers.
     RUBRICS = LEGACY_RUBRICS
 
-    # Canonical aliases for shipped built-in rubric YAML files.
-    BUILTIN_ALIASES = {
-        "soc2": "soc2-controls",
-        "hipaa": "hipaa-safeguards",
-        "pci-dss": "pci-dss-requirements",
-        "psd2": "psd2-sca-requirements",
-        "dora": "dora-ict-requirements",
-        "nacha": "nacha-us-payments-requirements",
-    }
+    # Backward-compatible name for the catalogue package's canonical aliases.
+    BUILTIN_ALIASES = RUBRIC_ALIASES
 
     DEFAULT_ZONE_SEVERITY = {
         "payment": "critical",
@@ -211,8 +205,7 @@ class RiskClassifier:
         """
         candidates: list[Path] = []
 
-        project_root = Path(__file__).resolve().parents[1]
-        candidates.append(project_root / "rubrics" / "builtin")
+        candidates.append(Path(rubric_dir()))
 
         if repo_root:
             candidates.extend([
@@ -588,7 +581,7 @@ class RiskClassifier:
         real pack. Only these paths are safe to resolve a config pack against.
         """
         shipped: dict[str, Path] = {}
-        directory = Path(__file__).resolve().parents[1] / "rubrics" / "builtin"
+        directory = Path(rubric_dir())
         if directory.exists():
             for ext in ("*.yaml", "*.yml"):
                 for file_path in directory.glob(ext):

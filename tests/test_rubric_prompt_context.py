@@ -26,12 +26,12 @@ import re
 from pathlib import Path
 
 import yaml
-from guardspine_prompts import format_rubric_context
+from guardspine_prompts import format_rubric_context, rubric_dir
 
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
 
-RUBRIC_DIR = Path(__file__).resolve().parents[1] / "rubrics" / "builtin"
+RUBRIC_DIR = Path(rubric_dir())
 
 
 def _analyzer() -> DiffAnalyzer:

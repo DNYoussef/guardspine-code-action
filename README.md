@@ -243,7 +243,7 @@ Verify any bundle independently -- see [Verification](#verification) section bel
 
 ### Compliance Rubrics
 
-Pre-built rubric YAML files ship in `rubrics/builtin/`:
+Pre-built rubric YAML files come from the pinned `guardspine-prompts` package:
 
 | Rubric | File | Purpose |
 |--------|------|---------|
@@ -775,8 +775,6 @@ codeguard-action/
     decision_profiles/    YAML policy files (standard, strict, advisory)
     adapters/
       pii_wasm_client.py  WASM-based PII-Shield for local mode
-  rubrics/
-    builtin/              Shipped rubric YAML files (soc2, hipaa, pci-dss, etc.)
   tests/                  Test suite
   eval/                   Evaluation harness
   docs/                   Documentation and demo images
