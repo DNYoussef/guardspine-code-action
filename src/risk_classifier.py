@@ -150,7 +150,13 @@ class RiskClassifier:
         # the workspace: actions/checkout gives us the PR head, so a PR could
         # otherwise ship a one-rule pack that matches nothing, point the config
         # at it, and be judged by a policy it wrote for itself.
-        self.config_packs: list[str] = [] if rubric_explicit else list(config_packs or [])
+        self.requested_config_packs = list(config_packs or [])
+        self.config_packs: list[str] = (
+            [] if rubric_explicit else list(self.requested_config_packs)
+        )
+        self.loaded_config_packs: list[str] = []
+        self.skipped_config_packs: dict[str, str] = {}
+        self.fallback_applied = bool(rubric_explicit and self.requested_config_packs)
 
         if not self.rubric_path:
             self.rubric_path = self._resolve_rubric_path(rubric)
@@ -509,6 +515,7 @@ class RiskClassifier:
                     f"falling back to rubric {self.rubric!r}"
                 )
                 self.config_packs = []
+                self.fallback_applied = True
                 fallback, fallback_errors = self._load_configured_rubric()
                 rules, errors = fallback, errors + fallback_errors
         else:
@@ -590,18 +597,23 @@ class RiskClassifier:
         for pack in packs:
             path = self._resolve_pack_path(pack)
             if path is None:
-                errors.append(
+                reason = (
                     f"Rubric pack {pack!r} from .guardspine/config.yml is not a "
                     "pack shipped with this Action; skipped. (Repo-local rubric "
                     "files are not selectable here -- point the workflow's "
                     "`rubric:` input at one instead.)"
                 )
+                self.skipped_config_packs[pack] = reason
+                errors.append(reason)
                 continue
             try:
                 pack_rules, pack_errors = self._parse_rubric_file(path, source_pack=pack)
             except (OSError, ValueError) as exc:
-                errors.append(f"Rubric pack {pack!r} failed to load: {exc}")
+                reason = f"Rubric pack {pack!r} failed to load: {exc}"
+                self.skipped_config_packs[pack] = reason
+                errors.append(reason)
                 continue
+            self.loaded_config_packs.append(pack)
             errors.extend(pack_errors)
             rules.extend(pack_rules)
 

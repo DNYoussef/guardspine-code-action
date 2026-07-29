@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
+import guardspine_prompts
 from github.PullRequest import PullRequest
 
 if TYPE_CHECKING:
@@ -27,6 +28,17 @@ try:
     from .canonical_json import canonical_json_dumps
 except ImportError:  # pragma: no cover - fallback for direct module imports in tests
     from canonical_json import canonical_json_dumps
+
+
+def build_governance_record(classifier, rubric_input: str = "default") -> dict:
+    return {
+        "catalogue_version": guardspine_prompts.__version__,
+        "requested_packs": list(classifier.requested_config_packs),
+        "loaded_packs": list(classifier.loaded_config_packs),
+        "skipped_packs": dict(classifier.skipped_config_packs),
+        "rubric_input": rubric_input,
+        "fallback_applied": classifier.fallback_applied,
+    }
 
 
 @dataclass
@@ -83,6 +95,7 @@ class BundleGenerator:
         attestation_key_id: Optional[str] = None,
         allow_insecure_signature_fallback: bool = False,
         id_nonce: str = "",
+        governance: dict | None = None,
     ) -> dict[str, Any]:
         """
         Create a complete evidence bundle for a PR.
@@ -267,6 +280,8 @@ class BundleGenerator:
         }
         if analysis.get("review_coverage") is None:
             bundle["analysis_snapshot"].pop("review_coverage")
+        if governance is not None:
+            bundle["governance"] = governance
 
         # Seal as the final step: whole-bundle hash + optional signature.
         self.seal_bundle(

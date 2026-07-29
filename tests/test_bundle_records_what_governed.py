@@ -214,3 +214,44 @@ def test_the_bundle_still_verifies_under_the_kernel():
     from guardspine_kernel.verify import verify_bundle
 
     assert verify_bundle(_sealed_bundle_with_governance())["valid"]
+
+
+def test_the_real_create_bundle_path_seals_the_record():
+    """Audit addition. The probe above seals a governance section by hand, so
+    it proves the SEAL covers such a section -- not that create_bundle puts it
+    inside the seal. If create_bundle attached it after sealing, every probe
+    above would still pass and the record would be forgeable.
+    """
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from src.bundle_generator import (
+        BundleGenerator, build_governance_record, verify_bundle_chain,
+    )
+
+    classifier = RiskClassifier(config_packs=["hipaa-safeguards"])
+    pr = SimpleNamespace(
+        number=7, title="t", created_at=datetime.now(timezone.utc),
+        user=SimpleNamespace(login="u"),
+        base=SimpleNamespace(ref="main"), head=SimpleNamespace(ref="f"),
+    )
+    bundle = BundleGenerator().create_bundle(
+        pr=pr,
+        analysis={"files_changed": 1, "lines_added": 1, "lines_removed": 0,
+                  "sensitive_zones": [], "files": []},
+        risk_result={"risk_tier": "L1", "risk_drivers": [], "findings": [],
+                     "rationale": "r", "decision": "merge"},
+        repository="test/repo", commit_sha="deadbeefcafe",
+        governance=build_governance_record(classifier, rubric_input="default"),
+    )
+
+    assert bundle["governance"]["loaded_packs"] == ["hipaa-safeguards"]
+    ok, reason = verify_bundle_chain(bundle)
+    assert ok, f"a freshly created bundle must verify: {reason}"
+
+    bundle["governance"]["loaded_packs"] = ["security"]
+    ok_forged, _ = verify_bundle_chain(bundle)
+    assert not ok_forged, (
+        "create_bundle attached the governance record OUTSIDE the seal -- it "
+        "can be rewritten without invalidating the bundle"
+    )

@@ -25,7 +25,7 @@ from github.PullRequest import PullRequest
 
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
-from src.bundle_generator import BundleGenerator
+from src.bundle_generator import BundleGenerator, build_governance_record
 from src.pr_commenter import PRCommenter
 from src.sarif_exporter import SARIFExporter
 from src.pii_shield import PIIShieldClient, PIIShieldError
@@ -817,6 +817,7 @@ def main():
             attestation_key=attestation_key,
             attestation_key_id=attestation_key_id,
             id_nonce=bundle_id_nonce,
+            governance=build_governance_record(classifier, rubric_input=rubric),
         )
 
         if sanitization_summary:

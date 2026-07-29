@@ -356,7 +356,10 @@ def _make_stubs():
         def builtin_names(_rr):
             return {"default"}
         def __init__(self, *a, **kw):
-            pass
+            self.requested_config_packs = []
+            self.loaded_config_packs = []
+            self.skipped_config_packs = {}
+            self.fallback_applied = False
         def rubric_prompt_packs(self):
             # No packs: these probes are about PII sanitization,
             # and an empty list leaves the prompt free of a
