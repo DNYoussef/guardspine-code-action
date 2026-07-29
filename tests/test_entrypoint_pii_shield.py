@@ -83,9 +83,13 @@ class TestEntrypointPIIShield(unittest.TestCase):
                 @staticmethod
                 def shipped_rubrics():
                     # Stands in for RiskClassifier at the rubric-resolution
-                    # seam: a shipped pack resolves by NAME, before any git
-                    # read, so `default` cannot depend on a base ref.
-                    return {}
+                    # seam. It must agree with builtin_names() above: claiming
+                    # `default` is a builtin while reporting NO shipped packs
+                    # sends a shipped name down the base-ref path, which is
+                    # fatal once a PR sets GITHUB_BASE_REF.
+                    from guardspine_prompts import rubric_paths
+
+                    return {"default": rubric_paths()["default"]}
 
                 @staticmethod
                 def builtin_names(_repo_root):
@@ -247,9 +251,13 @@ class TestFailOpenOnNonNetworkError(unittest.TestCase):
                 @staticmethod
                 def shipped_rubrics():
                     # Stands in for RiskClassifier at the rubric-resolution
-                    # seam: a shipped pack resolves by NAME, before any git
-                    # read, so `default` cannot depend on a base ref.
-                    return {}
+                    # seam. It must agree with builtin_names() above: claiming
+                    # `default` is a builtin while reporting NO shipped packs
+                    # sends a shipped name down the base-ref path, which is
+                    # fatal once a PR sets GITHUB_BASE_REF.
+                    from guardspine_prompts import rubric_paths
+
+                    return {"default": rubric_paths()["default"]}
                 @staticmethod
                 def builtin_names(_rr):
                     return {"default"}
@@ -370,9 +378,13 @@ def _make_stubs():
         @staticmethod
         def shipped_rubrics():
             # Stands in for RiskClassifier at the rubric-resolution
-            # seam: a shipped pack resolves by NAME, before any git
-            # read, so `default` cannot depend on a base ref.
-            return {}
+            # seam. It must agree with builtin_names() above: claiming
+            # `default` is a builtin while reporting NO shipped packs
+            # sends a shipped name down the base-ref path, which is
+            # fatal once a PR sets GITHUB_BASE_REF.
+            from guardspine_prompts import rubric_paths
+
+            return {"default": rubric_paths()["default"]}
         @staticmethod
         def builtin_names(_rr):
             return {"default"}
@@ -532,10 +544,14 @@ class TestSARIFSanitizationPath(unittest.TestCase):
 
             @staticmethod
             def shipped_rubrics():
-                # Stands in for RiskClassifier at the rubric-resolution
-                # seam: a shipped pack resolves by NAME, before any git
-                # read, so `default` cannot depend on a base ref.
-                return {}
+                # Must agree with builtin_names() below: claiming `default` is
+                # a builtin while reporting no shipped packs sends a shipped
+                # name down the base-ref path, fatal once GITHUB_BASE_REF is
+                # set (which every pull_request run does).
+                from guardspine_prompts import rubric_paths
+
+                return {"default": rubric_paths()["default"]}
+
             @staticmethod
             def builtin_names(_rr):
                 return {"default"}

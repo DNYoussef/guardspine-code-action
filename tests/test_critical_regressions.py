@@ -418,6 +418,15 @@ class TestDecisionPolicyResolutionRegression(unittest.TestCase):
                                 mock_classifier_cls.RUBRICS = {"default": {}}
                                 mock_classifier_cls.discover_builtin_rubrics.return_value = {}
                                 mock_classifier_cls.builtin_names.return_value = {"default"}
+                                # Must agree with builtin_names above. A mock
+                                # that calls `default` a builtin while reporting
+                                # no shipped packs sends a shipped name down the
+                                # base-ref path, which is fatal under
+                                # GITHUB_BASE_REF (set on every PR run).
+                                from guardspine_prompts import rubric_paths
+                                mock_classifier_cls.shipped_rubrics.return_value = {
+                                    "default": rubric_paths()["default"],
+                                }
                                 mock_classifier_cls.return_value = classifier_instance
                                 with patch("entrypoint.DecisionEngine") as mock_engine:
                                     mock_engine.return_value.decide.return_value = packet
