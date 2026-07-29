@@ -19,11 +19,23 @@ jobs:
       # First-party dogfood intentionally exercises the published @v1 consumer
       # contract; third-party actions are pinned above.
       - uses: DNYoussef/guardspine-code-action@v2
+        env:
+          # Ed25519 signing key (PEM). Required for the bundle to import: the
+          # backend hard-rejects unsigned bundles in prod, which is why every
+          # self-scan so far 422'd with "Bundle missing signatures". Passed via
+          # env, not `with:`, because a pinned tag's input set can lag the
+          # image; the container entrypoint reads this variable directly. This
+          # is what onboarding generates for customers -- our own dogfood had
+          # simply never been given the key.
+          GUARDSPINE_ATTESTATION_KEY: ${{ secrets.GUARDSPINE_ATTESTATION_KEY }}
         with:
           risk_threshold: L3
-          rubric: default
+          # No `rubric:` on purpose. Any explicit value -- INCLUDING the literal
+          # "default" -- is an override, so pinning it made this repo ignore the
+          # rubric_packs list in its own .guardspine/config.yml. Same reasoning
+          # as the onboarding template.
           github_token: ${{ github.token }}
           guardspine_api_key: ${{ secrets.GUARDSPINE_API_KEY }}
-          guardspine_api_url: https://api.guardspine.dev
+          guardspine_api_url: https://api.guardspine.ai/api/v1
           post_comment: "true"
           generate_bundle: "true"
