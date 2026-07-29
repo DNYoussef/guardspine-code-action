@@ -393,6 +393,22 @@ def _governing_rubric_path(
 ) -> Optional[Path]:
     """Return the single trusted rubric path that governs this scan."""
     workspace = workspace.resolve()
+
+    # A pack that SHIPS in the image is not repo content, so the base ref has
+    # nothing to say about it -- resolve it by NAME, before any git read.
+    #
+    # This used to be inferred by discovering the name and then checking the
+    # discovered path against the shipped set. That works only while discovery
+    # succeeds; when it does not (packaging hiccup, or a stubbed classifier),
+    # a shipped name fell through to the base-ref path. Harmless while that
+    # path degraded to `default`; fatal once it raises. CI caught exactly this:
+    # `default` failing with "not a git repository" on a workspace that is not
+    # a repo. The most common rubric in the product must not depend on a git
+    # read to resolve.
+    shipped = RiskClassifier.shipped_rubrics()
+    if rubric in shipped:
+        return shipped[rubric]
+
     discovered = RiskClassifier.discover_builtin_rubrics(workspace)
     path = discovered.get(rubric)
     if path:

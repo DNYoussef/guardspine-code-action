@@ -81,6 +81,13 @@ class TestEntrypointPIIShield(unittest.TestCase):
                     return {}
 
                 @staticmethod
+                def shipped_rubrics():
+                    # Stands in for RiskClassifier at the rubric-resolution
+                    # seam: a shipped pack resolves by NAME, before any git
+                    # read, so `default` cannot depend on a base ref.
+                    return {}
+
+                @staticmethod
                 def builtin_names(_repo_root):
                     return {"default"}
 
@@ -236,6 +243,13 @@ class TestFailOpenOnNonNetworkError(unittest.TestCase):
                 @staticmethod
                 def discover_builtin_rubrics(_rr):
                     return {}
+
+                @staticmethod
+                def shipped_rubrics():
+                    # Stands in for RiskClassifier at the rubric-resolution
+                    # seam: a shipped pack resolves by NAME, before any git
+                    # read, so `default` cannot depend on a base ref.
+                    return {}
                 @staticmethod
                 def builtin_names(_rr):
                     return {"default"}
@@ -351,6 +365,13 @@ def _make_stubs():
     class StubClassifier:
         @staticmethod
         def discover_builtin_rubrics(_rr):
+            return {}
+
+        @staticmethod
+        def shipped_rubrics():
+            # Stands in for RiskClassifier at the rubric-resolution
+            # seam: a shipped pack resolves by NAME, before any git
+            # read, so `default` cannot depend on a base ref.
             return {}
         @staticmethod
         def builtin_names(_rr):
@@ -507,6 +528,13 @@ class TestSARIFSanitizationPath(unittest.TestCase):
         class FindingsClassifier:
             @staticmethod
             def discover_builtin_rubrics(_rr):
+                return {}
+
+            @staticmethod
+            def shipped_rubrics():
+                # Stands in for RiskClassifier at the rubric-resolution
+                # seam: a shipped pack resolves by NAME, before any git
+                # read, so `default` cannot depend on a base ref.
                 return {}
             @staticmethod
             def builtin_names(_rr):
