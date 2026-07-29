@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: DNYoussef/codeguard-action@v1
+      - uses: DNYoussef/guardspine-code-action@v2
         id: guard
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -262,7 +262,7 @@ Custom rubrics are YAML files with a `rules` key. Place them in `.guardspine/rub
 > **Note**: These are *evidence mappings* that help document your existing controls -- they do not make you compliant by themselves. Always work with your auditors.
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     rubric: hipaa  # or: soc2, pci-dss, default, security, or path to custom YAML
 ```
@@ -272,7 +272,7 @@ Custom rubrics are YAML files with a `rules` key. Place them in `.guardspine/rub
 Export findings to GitHub Security tab:
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     upload_sarif: true
 
@@ -286,7 +286,7 @@ Export findings to GitHub Security tab:
 Clean PRs (decision=merge, tier below threshold) can be auto-merged:
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     auto_merge: true
     auto_merge_method: squash  # or merge, rebase
@@ -348,7 +348,7 @@ Requires `contents: write` permission on the workflow.
 ### Custom Risk Threshold per Branch
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     risk_threshold: ${{ github.base_ref == 'main' && 'L2' || 'L3' }}
 ```
@@ -356,7 +356,7 @@ Requires `contents: write` permission on the workflow.
 ### Custom Decision Policy
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     decision_policy: strict  # or: advisory, standard, path/to/custom.yaml
 ```
@@ -382,7 +382,7 @@ size_thresholds:
 ```
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     risk_policy: .guardspine/risk-policy.yaml
 ```
@@ -394,7 +394,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
 #### Option 1: OpenRouter (Recommended - 3 diverse models via single API)
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
@@ -406,7 +406,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
 #### Option 2: Ollama (Air-Gapped - 3 local models)
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     ollama_host: http://localhost:11434
@@ -418,7 +418,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
 #### Option 3: Mixed Providers (diversity of opinion)
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -435,12 +435,12 @@ Just provide one API key -- GuardSpine Code will use default models:
 
 ```yaml
 # Anthropic only (uses Claude Haiku 4.5 for all tiers)
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
 # OpenAI only (uses GPT 4.1 Mini for all tiers)
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
@@ -470,7 +470,7 @@ jobs:
       - name: Pull Ollama model
         run: |
           curl -X POST http://localhost:11434/api/pull -d '{"name": "llama3.3"}'
-      - uses: DNYoussef/codeguard-action@v1
+      - uses: DNYoussef/guardspine-code-action@v2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ollama_host: http://localhost:11434
@@ -480,7 +480,7 @@ jobs:
 ### Archive Evidence Bundles
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   id: codeguard
 
 - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -498,7 +498,7 @@ strategy:
     rubric: [soc2, hipaa, pci-dss]
 
 steps:
-  - uses: DNYoussef/codeguard-action@v1
+  - uses: DNYoussef/guardspine-code-action@v2
     with:
       rubric: ${{ matrix.rubric }}
 ```
@@ -604,7 +604,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: DNYoussef/codeguard-action@v1
+      - uses: DNYoussef/guardspine-code-action@v2
         id: codeguard
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -704,7 +704,7 @@ The raw diff is **never** modified. PII-Shield operates on copies sent to AI mod
 ### PII-Shield Configuration
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
