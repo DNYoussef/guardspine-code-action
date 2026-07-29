@@ -508,14 +508,14 @@ def main():
         print(f"::error::Risk policy file not found: {risk_policy_path}")
         sys.exit(1)
 
+    # On a pull request an unresolvable rubric raises RubricUnavailableError
+    # (caught at the boundary below) instead of returning None, so there is no
+    # longer a "fall back to default" branch here -- governing with a policy
+    # the config did not name is the defect that change removed.
     rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
-    if not rubric_path:
-        if get_env("GITHUB_BASE_REF"):
-            rubric = "default"
-            rubric_path = _governing_rubric_path(workspace, rubric, rubrics_dir)
-        elif rubric not in RiskClassifier.builtin_names(workspace):
-            print(f"::error::Rubric file not found: {rubric}")
-            sys.exit(1)
+    if not rubric_path and rubric not in RiskClassifier.builtin_names(workspace):
+        print(f"::error::Rubric file not found: {rubric}")
+        sys.exit(1)
 
     # GitHub context
     github_event_path = get_env("GITHUB_EVENT_PATH")
@@ -1186,4 +1186,13 @@ def set_output(name: str, value: str):
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RubricUnavailableError as exc:
+        # A deliberate refusal, not a crash. Surfaced as a GitHub error
+        # annotation with a chosen exit code so the customer sees the reason
+        # and the remedy rather than a stack trace.
+        for line in str(exc).splitlines():
+            if line.strip():
+                print(f"::error::{line.strip()}")
+        sys.exit(1)
