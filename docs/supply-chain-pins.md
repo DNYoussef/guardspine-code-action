@@ -19,8 +19,30 @@ base by manifest digest.
 | `actions/upload-artifact` | `v4` | `ea165f8d65b6e75b540449e92b4886f43607fa02` |
 | `github/codeql-action/upload-sarif` | `v3` | `b0c4fd77f6c559021d78430ec4d0d169ae74a4eb` |
 
-`DNYoussef/codeguard-action@v1` in the dogfood workflow is first-party and
+`DNYoussef/guardspine-code-action@v2` in the dogfood workflow is first-party and
 intentionally remains a consumer-contract rehearsal of the published action.
+
+## The action's own image pin
+
+`action.yml` on a release tag pins the runtime image. Through v2.7.1 that was a
+TAG:
+
+    image: 'docker://ghcr.io/dnyoussef/guardspine-code-action:2.7.1'
+
+A registry tag is mutable. Re-pushing `2.7.1` would silently change what every
+consumer pinned to `@v2.7.1` executes, while the Dockerfile one directory away
+digest-pins its own base image. For a product whose subject is supply-chain
+governance, holding ourselves to a weaker standard than we hold the base image
+is not a defensible asymmetry.
+
+From v2.7.2 the image is pinned by DIGEST, which cannot be repointed:
+
+    image: 'docker://ghcr.io/dnyoussef/guardspine-code-action@sha256:4b978fb4...'
+
+`main` keeps `image: 'Dockerfile'` so CI and the dryrun job build from the
+source under test. Releases are cut from a `release/` branch that flips it to
+the digest -- v2.7.0 was tagged straight off main and therefore rebuilds from
+source on every consumer run, which is why it is superseded.
 
 ## Docker base image
 

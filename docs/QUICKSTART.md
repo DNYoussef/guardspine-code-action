@@ -48,7 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: DNYoussef/codeguard-action@v1
+      - uses: DNYoussef/guardspine-code-action@v2
         id: guard
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -124,7 +124,7 @@ CONFIGURATION CHEAT SHEET
 Minimal (rules + single AI model):
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
@@ -133,7 +133,7 @@ Minimal (rules + single AI model):
 Standard (compliance rubric + block high risk):
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
@@ -145,7 +145,7 @@ Standard (compliance rubric + block high risk):
 Enterprise (multi-model + PII protection + SARIF):
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
@@ -162,7 +162,7 @@ Enterprise (multi-model + PII protection + SARIF):
 Air-gapped (Ollama, no external API calls):
 
 ```yaml
-- uses: DNYoussef/codeguard-action@v1
+- uses: DNYoussef/guardspine-code-action@v2
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     ollama_host: http://your-ollama-server:11434
@@ -214,7 +214,7 @@ TROUBLESHOOTING
   secret name matches exactly (OPENROUTER_API_KEY, not OpenRouter_Key).
 
 "Action not found"
-  Make sure you're using: DNYoussef/codeguard-action@v1 (case-sensitive).
+  Make sure you're using: DNYoussef/guardspine-code-action@v2 (case-sensitive).
 
 "Evidence bundle missing"
   The upload-artifact step needs path: .guardspine/bundles/ (with trailing /).
