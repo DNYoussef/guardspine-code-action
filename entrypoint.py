@@ -254,6 +254,14 @@ def _bundle_sync_failed(import_result) -> bool:
     return not (isinstance(import_result, dict) and import_result.get("verified") is True)
 
 
+class RubricUnavailableError(RuntimeError):
+    """The configured rubric cannot be resolved from a trusted source.
+
+    Raised rather than returning None so the scan stops instead of silently
+    governing with a different policy. See the fail-closed gate in
+    tests/test_rubric_resolution_fails_closed.py.
+    """
+
 def _base_ref_file(workspace: Path, path: str) -> tuple[Optional[str], Optional[str], list[str]]:
     """Read a repository file from the PR base ref, not the checkout."""
     import subprocess
@@ -366,12 +374,18 @@ def _trusted_rubric_path(
             atexit.register(trusted_path.unlink, missing_ok=True)
             return trusted_path
 
-    print(
-        f"::warning::Rubric '{rubric}' is not available from the base ref; "
-        "refusing the PR's copy and falling back to the default rubric. "
+    raise RubricUnavailableError(
+        f"Rubric '{rubric}' is not available from the base ref, so it "
+        "cannot govern this scan. Refusing the PR's copy is deliberate: a "
+        "pull request must not supply the policy that reviews it. "
+        "Fix: merge the rubric to the default branch first, then it governs "
+        "every later PR -- governance changes by being merged, the same rule "
+        "the rubric_packs list already follows. "
+        "This previously fell back to the default rubric and exited green, "
+        "so five generic rules governed the change while the config named "
+        "something else. "
         + " | ".join(failures)
     )
-    return None
 
 
 def _governing_rubric_path(

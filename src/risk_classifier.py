@@ -94,29 +94,6 @@ class RiskClassifier:
         ],
     }
 
-    # Legacy built-in rules used as fallback when rubric YAML files are unavailable.
-    LEGACY_RUBRICS = {
-        "default": {},
-        "soc2": {
-            "CC6.1": {"pattern": r"(auth|access|permission)", "severity": "high", "message": "Change management control affected"},
-            "CC6.2": {"pattern": r"(user|account|provision)", "severity": "medium", "message": "Access provisioning affected"},
-            "CC7.1": {"pattern": r"(CVE|vulnerab|patch|security)", "severity": "critical", "message": "Vulnerability management"},
-            "CC8.1": {"pattern": r"(terraform|kubernetes|docker|infra)", "severity": "high", "message": "Infrastructure change"},
-        },
-        "hipaa": {
-            "164.312.a": {"pattern": r"(phi|patient|medical|health)", "severity": "critical", "message": "PHI access control affected"},
-            "164.312.b": {"pattern": r"(audit|log|trail)", "severity": "high", "message": "Audit control affected"},
-            "164.312.e": {"pattern": r"(encrypt|tls|ssl|https)", "severity": "critical", "message": "Transmission security"},
-        },
-        "pci-dss": {
-            "3.4": {"pattern": r"(pan|card.number|credit)", "severity": "critical", "message": "Cardholder data handling"},
-            "6.5": {"pattern": r"(sql|inject|xss|csrf)", "severity": "critical", "message": "Secure coding requirement"},
-            "8.3": {"pattern": r"(password|mfa|auth)", "severity": "high", "message": "Authentication control"},
-        },
-    }
-    # Backward-compatible alias used by older tests/callers.
-    RUBRICS = LEGACY_RUBRICS
-
     # Backward-compatible name for the catalogue package's canonical aliases.
     BUILTIN_ALIASES = RUBRIC_ALIASES
 
@@ -318,10 +295,14 @@ class RiskClassifier:
 
     @classmethod
     def builtin_names(cls, repo_root: str | Path | None = None) -> set[str]:
-        """Return all known built-in rubric names (discovered + legacy)."""
-        names = set(cls.LEGACY_RUBRICS.keys())
-        names.update(cls.discover_builtin_rubrics(repo_root).keys())
-        return names
+        """Return all known built-in rubric names.
+
+        Formerly unioned a hardcoded LEGACY_RUBRICS table. That table also
+        supplied STUB RULES labelled with real control ids when a pack's YAML
+        was missing, so it has been deleted; the shipped catalogue supplies
+        every name it used to cover, aliases included.
+        """
+        return set(cls.discover_builtin_rubrics(repo_root).keys())
 
     def _resolve_rubric_path(self, rubric: str) -> Path | None:
         """Resolve rubric name/path to a concrete YAML file path when available."""
@@ -498,28 +479,6 @@ class RiskClassifier:
             })
         return list(packs.values())
 
-    def _load_legacy_rubric_rules(self) -> tuple[list[dict], list[str]]:
-        """Fallback rules for a builtin name with no shipped YAML."""
-        rules: list[dict] = []
-        errors: list[str] = []
-        for rid, rule in self.LEGACY_RUBRICS.get(self.rubric, {}).items():
-            try:
-                compiled = re.compile(rule["pattern"], re.IGNORECASE)
-            except Exception as exc:
-                errors.append(f"Rule {rid} skipped: {exc}")
-                compiled = None
-            rules.append({
-                "id": rid,
-                "severity": normalize_severity(rule.get("severity", "medium")),
-                "message": rule.get("message", "Policy rule triggered"),
-                "pattern": rule.get("pattern", ""),
-                "compiled": compiled,
-                "compiled_patterns": [compiled] if compiled else [],
-                "evaluator_eligible": bool(compiled),
-                "reviewer_eligible": bool(compiled),
-                "source_pack": self.rubric,
-            })
-        return rules, errors
 
     def _load_rubric_rules(self) -> tuple[list[dict], list[str]]:
         """Load rubric rules from a config.yml pack list, a file, or built-ins.
@@ -565,7 +524,13 @@ class RiskClassifier:
         """Load the single rubric named by the `rubric:` input (pre-pack path)."""
         if self.rubric_path:
             return self._parse_rubric_file(self.rubric_path, source_pack=self.rubric)
-        return self._load_legacy_rubric_rules()
+        # No YAML for this name. Previously this substituted three hardcoded
+        # regexes carrying real control ids, so a scan could cite HIPAA
+        # 164.312.a while the actual pack never loaded. Emit nothing and say so.
+        return [], [
+            f"Rubric {self.rubric!r} has no shipped definition; no rules were "
+            "loaded. It must not be reported as governing this scan."
+        ]
 
     # A committed config is attacker-controlled (anyone who can open a PR can
     # edit it), so a pack name must never become an arbitrary filesystem read.
