@@ -254,6 +254,44 @@ def _bundle_sync_failed(import_result) -> bool:
     return not (isinstance(import_result, dict) and import_result.get("verified") is True)
 
 
+def _bundle_is_signed(bundle) -> bool:
+    """Does this bundle carry an attestation signature?
+
+    STRICT, and deliberately so: only a non-empty LIST of signatures counts.
+    Absent, empty, ``null`` or a truthy non-list all resolve to False, because
+    "we cannot tell" must land on the weaker claim rather than the stronger.
+
+    Note this reads the RESULT, not the key. A run that supplied a key which
+    then produced no signature is unsigned, and saying otherwise would be the
+    exact lie this guards against.
+    """
+    return bool(isinstance(bundle, dict)
+                and isinstance(bundle.get("signatures"), list)
+                and bundle["signatures"])
+
+
+def _attestation_notice(bundle) -> Optional[str]:
+    """The GitHub annotation for an unsigned bundle, or None when signed.
+
+    Two tiers exist by design (see BundleGenerator.seal_bundle): the keyless
+    ``bundle_hash`` is tamper-evidence anyone can recompute, while a signature
+    adds non-repudiation. Both are legitimate; conflating them is not. Emitting
+    nothing let an unsigned bundle be uploaded as a 90-day evidence artifact
+    while the run said only "Evidence bundle generated".
+
+    Returns None when signed so the annotation stays rare enough to read -- a
+    warning on every run trains reviewers to ignore it.
+    """
+    if _bundle_is_signed(bundle):
+        return None
+    return (
+        "::warning::Evidence bundle is NOT signed: it carries the keyless "
+        "bundle_hash (tamper-evidence, recomputable by anyone) but no "
+        "attestation signature, so it does not establish non-repudiation. "
+        "Set the attestation_key input to sign it."
+    )
+
+
 class RubricUnavailableError(RuntimeError):
     """The configured rubric cannot be resolved from a trusted source.
 
@@ -889,8 +927,15 @@ def main():
             relative_bundle = bundle_path
         set_output("bundle_path", str(relative_bundle))
         set_output("bundle_id", bundle.get("bundle_id", ""))
+        # Published so a workflow can BRANCH on the attestation tier; a log line
+        # alone cannot be gated on, and the bundle is uploaded as a 90-day
+        # artifact either way.
+        set_output("bundle_signed", "true" if _bundle_is_signed(bundle) else "false")
         print(f"Bundle saved: {relative_bundle}")
         print(f"Bundle ID: {bundle['bundle_id']}")
+        attestation_notice = _attestation_notice(bundle)
+        if attestation_notice:
+            print(attestation_notice)
         print("guardspine_api_url: ", guardspine_api_url)
         print("guardspine_api_key set: ", guardspine_api_key and len(guardspine_api_key))
         # Sync bundle to GuardSpine dashboard
