@@ -91,6 +91,70 @@ AI_REVIEW_RESPONSE_SCHEMA = {
     },
 }
 
+# JSON Schema keywords that structured-output backends reject outright.
+#
+# Anthropic's structured output, which OpenRouter targets for Claude models,
+# 400s on numeric bounds: "output_config.format.schema: For 'number' type,
+# properties maximum, minimum are not supported". It failed identically via
+# Azure, Bedrock and Anthropic direct, so there was no provider left to fall
+# back to and the reviewer never ran at all. Sending these keywords does not
+# tighten the review, it deletes a third of the panel.
+#
+# The documented unsupported set is wider than the one keyword the error named:
+# numerical constraints, string constraints (minLength, maxLength), and array
+# constraints beyond minItems of 0 or 1. All of them are listed here so the next
+# person to add a constraint does not silently kill a reviewer again.
+#
+# Dropping them from the wire costs nothing, because _parse_ai_review re-checks
+# every one of these bounds in Python and fails closed: the confidence 0-1 range
+# and the rubric 1-5 range are both enforced there. The wire schema is a hint to
+# the model; the Python validator is the guarantee. Keep the bounds in the
+# canonical schema above so it stays the honest description of the contract.
+UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
+    "minLength", "maxLength", "pattern",
+    "minItems", "maxItems", "uniqueItems",
+})
+
+# Keys whose values map NAMES to subschemas. Their keys are field names, not
+# schema keywords, so a field legitimately called "minimum" must survive.
+# Without this the sanitizer would silently drop real fields.
+_SCHEMA_NAME_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+
+
+def wire_schema(node):
+    """Deep-copy a schema into the subset structured-output backends accept.
+
+    Two transforms, both required. Stripping the bounds alone is not enough:
+    rubric_scores uses `"type": ["number", "null"]`, and a type UNION is also
+    unsupported. The documented replacement is anyOf, so a schema with only the
+    keywords removed would still have been rejected and the reviewer would still
+    never have run.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            if key in UNSUPPORTED_SCHEMA_KEYWORDS:
+                continue
+            if key in _SCHEMA_NAME_MAPS and isinstance(value, dict):
+                out[key] = {name: wire_schema(sub) for name, sub in value.items()}
+            else:
+                out[key] = wire_schema(value)
+
+        # A type union becomes anyOf. Sibling keys (description, default) are
+        # kept alongside it, which is valid.
+        types = out.get("type")
+        if isinstance(types, list):
+            if len(types) == 1:
+                out["type"] = types[0]
+            elif len(types) > 1:
+                del out["type"]
+                out["anyOf"] = [{"type": t} for t in types]
+        return out
+    if isinstance(node, list):
+        return [wire_schema(item) for item in node]
+    return node
+
 
 @dataclass
 class FileChange:
@@ -1379,7 +1443,7 @@ Respond ONLY with the structured object above."""
             "json_schema": {
                 "name": "codeguard_ai_review",
                 "strict": True,
-                "schema": json.loads(json.dumps(AI_REVIEW_RESPONSE_SCHEMA)),
+                "schema": wire_schema(AI_REVIEW_RESPONSE_SCHEMA),
             },
         }
 
@@ -1388,7 +1452,7 @@ Respond ONLY with the structured object above."""
         return {
             "name": AI_REVIEW_TOOL_NAME,
             "description": "Submit the CodeGuard security review verdict.",
-            "input_schema": json.loads(json.dumps(AI_REVIEW_PAYLOAD_SCHEMA)),
+            "input_schema": wire_schema(AI_REVIEW_PAYLOAD_SCHEMA),
         }
 
     def _anthropic_tool_response_to_text(self, response: Any) -> str:
