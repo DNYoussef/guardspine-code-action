@@ -187,6 +187,8 @@ outputs:
     description: 'Stable verdict alias (APPROVE | CONDITIONS | BLOCK) mapped from decision for workflows that gate on outputs.verdict.'
   bundle_id:
     description: 'Evidence bundle identifier (empty string if generate_bundle is false). Stable alias for workflows that reference outputs.bundle_id.'
+  bundle_signed:
+    description: 'Whether the evidence bundle carries an attestation signature (true/false). False means the bundle still has the keyless bundle_hash (tamper-evidence) but establishes no non-repudiation; set attestation_key to sign it.'
   merged:
     description: 'Whether PR was auto-merged'
   merge_sha:
