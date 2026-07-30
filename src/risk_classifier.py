@@ -744,6 +744,41 @@ class RiskClassifier:
         rubric_findings = self._apply_rubric(files)
         findings.extend(rubric_findings)
 
+        # Record how much review actually happened.
+        #
+        # A reviewer that fails contributes no concerns, and the decision engine
+        # decides on findings alone, so a total outage produced zero findings and
+        # a clean "merge" -- measured: models_used 0, coverage.complete False,
+        # agreement 0.0, decision merge. Silence and "nothing wrong" looked
+        # identical, on a product whose claim is that the record says what
+        # happened.
+        #
+        # Its own rule_id, deliberately. This is not an AI concern and must never
+        # be read as one: missing evidence is a different thing from a reviewer
+        # disagreeing about the diff, and collapsing them is what taught readers
+        # that these findings are noise.
+        #
+        # Severity low, also deliberately. The policy chosen is record, do not
+        # block: low is the only severity that stays advisory under every profile
+        # (strict promotes medium+provable to a condition), so no consumer's
+        # merge outcome changes. Visibility comes from the log line and the
+        # bundle, not from the severity.
+        coverage = analysis.get("review_coverage") or {}
+        attempted = coverage.get("attempted")
+        if attempted:
+            succeeded = coverage.get("succeeded", 0)
+            if succeeded < attempted:
+                findings.append(Finding(
+                    id="AI-COVERAGE",
+                    severity="low",
+                    message=(
+                        f"AI review coverage: {succeeded} of {attempted} reviewers "
+                        "returned a verdict"
+                    ),
+                    file="", line=None,
+                    rule_id="ai-availability", zone=None, provable=True,
+                ))
+
         # --- AI Consensus Modulation ---
         # When AI models reviewed the diff, use their consensus to adjust
         # finding severity. This reduces FPs (AI approves benign keyword

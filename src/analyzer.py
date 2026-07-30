@@ -123,6 +123,33 @@ UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({
 _SCHEMA_NAME_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 
 
+def format_review_diagnostics(configured: int, mmr: dict) -> list[str]:
+    """The reviewer numbers, stated so they reconcile.
+
+    The log printed "configured: 3" on one line and "used: 2, failed: 0" on
+    another. Those come from different denominators -- configured counts the
+    models with credentials, used and failed count the ones the TIER asked for
+    -- so subtracting across them finds a reviewer that was never missing.
+    Saying how many were requested closes it, and a real shortfall
+    (requested > used + failed) is called out rather than left to arithmetic.
+
+    A module function, not a method: it needs nothing from an analyzer, and
+    hanging it off the class coupled every test that stubs DiffAnalyzer to it.
+    """
+    used = int(mmr.get("models_used", 0) or 0)
+    failed = int(mmr.get("models_failed", 0) or 0)
+    requested = int(mmr.get("models_requested", used + failed) or 0)
+
+    lines = [f"AI reviewers requested: {requested}, used: {used}, failed: {failed}"]
+    if requested < configured:
+        lines.append(f"  ({configured} configured; the risk tier asked for {requested})")
+    if used + failed < requested:
+        lines.append(
+            f"::warning::{requested - used - failed} requested reviewer(s) unaccounted for"
+        )
+    return lines
+
+
 def wire_schema(node):
     """Deep-copy a schema into the subset structured-output backends accept.
 
@@ -753,13 +780,12 @@ class DiffAnalyzer:
             result.agreement_score = consensus.get("agreement_score") or 0.0
 
             # Legacy compatibility: also include ai_summary from first model
-            successful = [r for r in multi_review.get("reviews", []) if not r.get("error")]
-            if successful:
-                first_review = successful[0]
+            source = self._pick_ai_summary_source(multi_review.get("reviews", []))
+            if source:
                 result.ai_summary = {
-                    "summary": first_review.get("summary", ""),
-                    "intent": first_review.get("intent", ""),
-                    "concerns": first_review.get("concerns", []),
+                    "summary": source.get("summary", ""),
+                    "intent": source.get("intent", ""),
+                    "concerns": source.get("concerns", []),
                 }
         else:
             result.multi_model_review = {
@@ -873,7 +899,11 @@ class DiffAnalyzer:
             "reviews": reviews,
             "models_used": len(successful_reviews),
             "models_failed": len(failed_reviews),
-            "models_requested": models_needed,
+            # models_to_use, not models_needed: the tier can ask for three while
+            # only one is configured, and reporting the ask as the request made
+            # used + failed fail to reconcile with it. What was attempted is the
+            # honest denominator; the tier's ask is a separate fact.
+            "models_requested": models_to_use,
             "model_errors": [
                 f"{r.get('provider')}/{r.get('model_name')}: {self._error_type(r)}"
                 for r in failed_reviews
@@ -1603,6 +1633,27 @@ Respond ONLY with the structured object above."""
     @staticmethod
     def _review_failed(review: dict) -> bool:
         return bool(review.get("error") or review.get("parse_error") or review.get("schema_error"))
+
+    @classmethod
+    def _pick_ai_summary_source(cls, reviews: list[dict]) -> dict | None:
+        """The first review that actually produced a verdict, or None.
+
+        This used to filter on `not r.get("error")`, which is a narrower test
+        than _review_failed: it catches a provider outage but not a review whose
+        ANSWER was rejected. A schema/parse-rejected review was therefore counted
+        as failed for models_used, for review_coverage and for the consensus
+        vote, and simultaneously picked as the summary source here. Its rejection
+        notice became the displayed summary, and through risk_classifier's
+        ai_summary fallback an "AI concern:" finding -- a reviewer malfunction
+        presented as an opinion about the customer's code.
+
+        One predicate now, so "usable" means the same thing everywhere.
+        """
+        for review in reviews:
+            if not cls._review_failed(review):
+                return review
+        return None
+
 
     @staticmethod
     def _error_type(review: dict) -> str:

@@ -201,26 +201,65 @@ def test_our_secrets_never_reach_a_finding(tmp_path):
 # #7 -- an outage is not a finding about the customer's code
 # ---------------------------------------------------------------------------
 
+def _rule_id(f) -> str:
+    return str(f["rule_id"] if isinstance(f, dict) else f.rule_id)
+
+
 def test_a_total_outage_produces_no_findings_about_the_code():
+    """Narrowed from "no ai-* finding" to "no ai-CONSENSUS finding".
+
+    The old assertion matched any ai- prefix, which was right while the only
+    ai- rule was ai-consensus. Total review loss is now RECORDED under its own
+    rule_id (ai-availability), because silence and "nothing wrong" were
+    indistinguishable and the engine decides on findings alone. That record is
+    about the review, not about the diff, so the property this test exists to
+    protect is unchanged: an outage still manufactures no opinion about the
+    customer's code.
+    """
     _analysis, risk = _run([_raises, _raises, _raises])
-    ai_findings = [
-        f for f in risk["findings"]
-        if str(f["rule_id"] if isinstance(f, dict) else f.rule_id).startswith("ai-")
-    ]
-    assert not ai_findings, (
-        f"an outage produced {len(ai_findings)} finding(s) about the diff: "
-        f"{[(f['id'] if isinstance(f, dict) else f.id) for f in ai_findings]}"
+    code_findings = [f for f in risk["findings"] if _rule_id(f) == "ai-consensus"]
+    assert not code_findings, (
+        f"an outage produced {len(code_findings)} finding(s) about the diff: "
+        f"{[(f['id'] if isinstance(f, dict) else f.id) for f in code_findings]}"
     )
 
 
+def test_the_outage_record_is_not_a_code_opinion():
+    """The availability record exists, and must not read as one."""
+    _analysis, risk = _run([_raises, _raises, _raises])
+    record = [f for f in risk["findings"] if _rule_id(f) == "ai-availability"]
+    assert record, "a total outage was recorded nowhere"
+    msg = (record[0]["message"] if isinstance(record[0], dict) else record[0].message)
+    assert not msg.lower().startswith("ai concern"), msg
+    assert "minority" not in msg.lower(), msg
+
+
 def test_an_outage_does_not_inflate_the_finding_count():
-    outage, _ = _run([_raises, _raises, _raises]), None
-    clean, _ = _run([_valid, _valid, _valid]), None
+    """An outage must not add pressure to the decision.
+
+    Counting findings was the old proxy for that, and it stopped working once
+    the outage is recorded. The thing actually worth protecting is that the
+    record cannot become a condition or a block, so assert THAT, under every
+    profile rather than the default one.
+    """
+    from entrypoint import _map_findings
+    from src.decision_engine import DecisionEngine
+
     _a_out, risk_out = _run([_raises, _raises, _raises])
-    _a_ok, risk_ok = _run([_valid, _valid, _valid])
-    outage_ai = [f for f in risk_out["findings"]
-                 if str(f["rule_id"] if isinstance(f, dict) else f.rule_id).startswith("ai-")]
-    assert not outage_ai
+    assert not [f for f in risk_out["findings"] if _rule_id(f) == "ai-consensus"]
+
+    # The fixture diff carries real high-severity findings (auth change,
+    # hardcoded secret) which SHOULD become conditions. The claim here is
+    # narrower: the availability record is never one of them.
+    findings = _map_findings(risk_out["findings"])
+    availability = "AI review coverage"
+    for policy in ("advisory", "standard", "strict"):
+        packet = DecisionEngine(policy).decide(findings)
+        escalated = [
+            f.description for f in (packet.hard_blocks + packet.conditions)
+            if availability in (f.description or "")
+        ]
+        assert not escalated, f"{policy}: the outage record escalated: {escalated}"
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from typing import Any, Optional
 from github import Auth, Github
 from github.PullRequest import PullRequest
 
-from src.analyzer import DiffAnalyzer
+from src.analyzer import DiffAnalyzer, format_review_diagnostics
 from src.risk_classifier import RiskClassifier
 from src.bundle_generator import BundleGenerator, build_governance_record
 from src.pr_commenter import PRCommenter
@@ -719,12 +719,13 @@ def main():
 
     # Log AI review results
     mmr = analysis.get("multi_model_review") or {}
-    models_used = mmr.get("models_used", 0)
-    models_failed = mmr.get("models_failed", 0)
     model_errors = mmr.get("model_errors", [])
     tier_from_analysis = analysis.get("preliminary_tier", "?")
     print(f"Preliminary tier: {tier_from_analysis}")
-    print(f"AI models used: {models_used}, failed: {models_failed}")
+    # One place that states requested/used/failed together, so the numbers
+    # reconcile instead of inviting a subtraction across two denominators.
+    for line in format_review_diagnostics(len(configured_models), mmr):
+        print(line)
     if model_errors:
         for err in model_errors:
             print(f"::warning::AI model error: {err}")
