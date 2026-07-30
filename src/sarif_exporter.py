@@ -75,6 +75,18 @@ class SARIFExporter:
         self.rules = {}
         results = []
 
+        # SARIF is code scanning: every result is an alert ABOUT THE SOURCE, and
+        # anything not zone- or rubric-scoped is classified "security" with a
+        # source location. An availability record has no file, so it would ship
+        # as a security alert against uri "" -- a provider outage rendered as a
+        # vulnerability in the customer's repository. That is the same category
+        # error this record exists to avoid, in a different pipe. It belongs in
+        # the log, the PR comment and the bundle, not in code scanning.
+        findings = [
+            f for f in findings
+            if str(f.get("rule_id") or "") != "ai-availability"
+        ]
+
         for finding in findings:
             rule_id = finding.get("rule_id", finding.get("id", "unknown"))
 

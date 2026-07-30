@@ -119,12 +119,85 @@ def test_both_kinds_of_broken_are_failed():
     assert DiffAnalyzer._review_failed(good()) is False
 
 
+def _analysis_with(responses: list):
+    """Drive analyze() end to end, so the probe covers the WIRING.
+
+    Calling _pick_ai_summary_source directly proves only that the helper works.
+    An adversarial pass reverted analyze() to the old `not r.get("error")`
+    filter and every probe here still passed, which made them theater: the bug
+    was never in the helper, it was in which filter the call site used.
+    """
+    a = DiffAnalyzer(openrouter_key="x", model_1="openai/m1", model_2="openai/m2")
+    it = iter(responses)
+
+    def call(provider, model, prompt):
+        nxt = next(it)
+        if isinstance(nxt, Exception):
+            raise nxt
+        return nxt, {"model_id": model}
+
+    a._call_provider = call
+    result = a.analyze(
+        "diff --git a/src/app.py b/src/app.py\n--- a/src/app.py\n"
+        "+++ b/src/app.py\n@@ -0,0 +1 @@\n+x = 1\n"
+    )
+    # Assert the precondition rather than trusting it. Without this the probes
+    # below pass silently whenever the run degenerates to fewer reviewers than
+    # the case needs -- which is how one of them survived a mutation that it
+    # caught when run in isolation. A degenerate run must fail loudly, not
+    # quietly agree.
+    reviews = (result.multi_model_review or {}).get("reviews", [])
+    assert len(reviews) == len(responses), (
+        f"expected {len(responses)} reviewers, got {len(reviews)}; "
+        "this probe proves nothing on a degenerate run"
+    )
+    return result
+
+
+GOOD_JSON = json.dumps({"codeguard_review": {
+    "schema_version": "codeguard.ai_review.v1",
+    "summary": "Adds a null guard to the pointer handler",
+    "intent": "bugfix", "concerns": ["No test for the zero-size case"],
+    "risk_assessment": "comment", "confidence": 0.8,
+    "rubric_scores": {"security_impact": 4, "code_quality": 4,
+                      "test_coverage": 3, "documentation": 3,
+                      "rollback_safety": 4},
+}})
+
+
 def test_a_rejected_answer_does_not_become_the_ai_summary():
     """Ordered rejected-first: the picker takes the first entry passing its
     filter, so order is what makes the disagreement visible."""
     picked = DiffAnalyzer._pick_ai_summary_source([schema_rejected(), good()])
     assert picked is not None, "a usable review existed and was not picked"
     assert picked["summary"].startswith("Adds a null guard"), picked["summary"]
+
+
+def test_analyze_does_not_surface_a_rejection_notice_as_the_summary():
+    """The same property, through analyze(). This is the one that fails if the
+    call site regresses to the weaker filter."""
+    result = _analysis_with(["not json at all", GOOD_JSON])
+    summary = (result.ai_summary or {}).get("summary", "")
+    assert "rejected" not in summary.lower(), summary
+    assert summary.startswith("Adds a null guard"), summary
+
+
+def test_analyze_leaves_no_summary_when_nothing_was_usable():
+    result = _analysis_with(["not json at all", RuntimeError(PROVIDER_ERROR)])
+    assert not (result.ai_summary or {}).get("summary"), result.ai_summary
+    assert not (result.ai_summary or {}).get("concerns"), result.ai_summary
+
+
+def test_analyze_reconciles_its_own_reviewer_counts():
+    """Reads the PRODUCTION packer rather than recomputing the predicate in the
+    test, which was a tautology: it asserted a definition against itself."""
+    for responses in (
+        [GOOD_JSON, GOOD_JSON],
+        [GOOD_JSON, "not json at all"],
+        [RuntimeError(PROVIDER_ERROR), "not json at all"],
+    ):
+        mmr = _analysis_with(responses).multi_model_review
+        assert mmr["models_used"] + mmr["models_failed"] == mmr["models_requested"], mmr
 
 
 def test_no_usable_review_means_no_ai_summary():
@@ -209,6 +282,42 @@ def test_recording_it_does_not_change_the_decision():
         assert not packet.conditions, policy
 
 
+def test_the_record_never_becomes_a_code_scanning_alert():
+    """SARIF is code scanning. Every result there is an alert about the SOURCE,
+    and an availability record has no file, so it would ship as a security
+    finding against uri "" -- the same category error in a different pipe."""
+    from src.sarif_exporter import SARIFExporter
+    sarif = SARIFExporter().export(_coverage_findings([crashed()]), "o/r", "abc")
+    rule_ids = [r.get("ruleId") for r in sarif["runs"][0]["results"]]
+    assert "ai-availability" not in rule_ids, rule_ids
+    for r in sarif["runs"][0]["results"]:
+        for loc in r.get("locations", []):
+            uri = loc["physicalLocation"]["artifactLocation"]["uri"]
+            assert uri, f"result {r.get('ruleId')} has an empty source location"
+
+
+def test_a_custom_policy_can_still_choose_to_block_on_it():
+    """Scope correction. The claim is that the BUNDLED profiles stay advisory,
+    not that no policy can ever escalate this.
+
+    An operator who writes `hard_block_rules: [{severity: low, provable_only:
+    true}]` is deliberately asking to block on review loss, and honouring that
+    is the system working rather than a defect. Pinned so the narrower claim is
+    the one on record.
+    """
+    from entrypoint import _map_findings
+    from src.decision_engine import DecisionEngine
+    engine = DecisionEngine("standard")
+    engine._policy = {
+        "name": "custom",
+        "hard_block_rules": [{"severity": "low", "provable_only": True}],
+        "condition_rules": [],
+        "max_conditions": 2,
+    }
+    packet = engine.decide(_map_findings(_coverage_findings([crashed()])))
+    assert packet.decision == "block"
+
+
 def test_a_complete_review_records_nothing():
     """No noise on the happy path, or the signal stops meaning anything."""
     assert _find(_coverage_findings([good(), good()]), "ai-availability") is None
@@ -222,16 +331,10 @@ def test_partial_loss_is_recorded_too():
 # 3. Accounting that reconciles
 # ---------------------------------------------------------------------------
 
-def test_used_plus_failed_equals_attempted():
-    for reviews in (
-        [good(), good()],
-        [good(), schema_rejected()],
-        [crashed(), schema_rejected()],
-        [good(), crashed(), schema_rejected()],
-    ):
-        used = len([r for r in reviews if not DiffAnalyzer._review_failed(r)])
-        failed = len([r for r in reviews if DiffAnalyzer._review_failed(r)])
-        assert used + failed == len(reviews)
+# test_used_plus_failed_equals_attempted was removed. It computed `used` and
+# `failed` with the same predicate it then asserted, so it was a tautology that
+# never read either packer's counts. test_analyze_reconciles_its_own_reviewer_counts
+# above does the real thing.
 
 
 def test_requested_never_exceeds_what_is_configured():

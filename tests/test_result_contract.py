@@ -217,10 +217,18 @@ def test_a_total_outage_produces_no_findings_about_the_code():
     customer's code.
     """
     _analysis, risk = _run([_raises, _raises, _raises])
-    code_findings = [f for f in risk["findings"] if _rule_id(f) == "ai-consensus"]
+    # An ALLOW-LIST, not a blacklist of ai-consensus. Blacklisting the one rule
+    # that exists today would let any future ai-* rule through silently, which
+    # is exactly the regression the original prefix assertion was guarding
+    # against. Adding a new ai-* rule now forces a deliberate decision here.
+    permitted = {"ai-availability"}
+    code_findings = [
+        f for f in risk["findings"]
+        if _rule_id(f).startswith("ai-") and _rule_id(f) not in permitted
+    ]
     assert not code_findings, (
         f"an outage produced {len(code_findings)} finding(s) about the diff: "
-        f"{[(f['id'] if isinstance(f, dict) else f.id) for f in code_findings]}"
+        f"{[(_rule_id(f), f['id'] if isinstance(f, dict) else f.id) for f in code_findings]}"
     )
 
 
@@ -246,7 +254,11 @@ def test_an_outage_does_not_inflate_the_finding_count():
     from src.decision_engine import DecisionEngine
 
     _a_out, risk_out = _run([_raises, _raises, _raises])
-    assert not [f for f in risk_out["findings"] if _rule_id(f) == "ai-consensus"]
+    permitted = {"ai-availability"}
+    assert not [
+        f for f in risk_out["findings"]
+        if _rule_id(f).startswith("ai-") and _rule_id(f) not in permitted
+    ]
 
     # The fixture diff carries real high-severity findings (auth change,
     # hardcoded secret) which SHOULD become conditions. The claim here is
