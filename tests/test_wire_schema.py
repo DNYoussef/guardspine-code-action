@@ -15,6 +15,7 @@ and _parse_ai_review enforces them in Python, fail-closed. The last two tests
 here are the ones that matter: they prove the guarantee survived the wire change.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -157,8 +158,6 @@ def _payload(**overrides):
         },
     }
     body.update(overrides)
-    import json
-
     return json.dumps({"codeguard_review": body})
 
 
