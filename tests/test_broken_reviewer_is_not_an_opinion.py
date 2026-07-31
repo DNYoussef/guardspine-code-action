@@ -32,6 +32,22 @@ Three things #39 did not cover, all found by RCA:
    invites subtraction across two denominators. models_requested is computed by
    both packers, never printed, and wrong when fewer models are configured than
    the tier wants.
+
+A second review of the fix for (3) found that it had traded one silence for
+another, and the corrections are pinned below:
+
+  - Making models_requested mean "attempted" did reconcile the arithmetic, by
+    deleting the only record that the tier had asked for more. One reviewer
+    configured against an L4 tier wanting three reported complete coverage.
+    Both numbers are kept now, and coverage is judged against the ASK.
+  - The AI-COVERAGE record made the caller's findings list truthy, so a total
+    outage generated a SARIF document whose only result the exporter then
+    removed -- zero results with executionSuccessful true, which is how code
+    scanning is told to close existing alerts. An outage became an all-clear.
+  - It also inflated findings_count, a documented public output customers gate
+    on, so an outage changed their merge outcome.
+  - "One predicate everywhere" was claimed while two call sites still used the
+    narrow one: early-exit voting and evidence-bundle provenance.
 """
 
 import json
@@ -40,9 +56,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src.analyzer import DiffAnalyzer, format_review_diagnostics  # noqa: E402
+from src.analyzer import (  # noqa: E402
+    DiffAnalyzer, format_review_diagnostics, review_failed,
+)
 from src.decision_engine import DecisionEngine  # noqa: E402
 from src.risk_classifier import RiskClassifier  # noqa: E402
+from src.sarif_exporter import SARIFExporter, is_policy_finding  # noqa: E402
 
 PROVIDER_ERROR = (
     "Error code: 400 - {'error': {'message': 'Provider returned error', "
@@ -210,11 +229,6 @@ def test_a_genuine_concern_is_still_reported():
     assert picked["concerns"] == ["No test for the zero-size case"]
 
 
-def test_a_rejection_notice_is_not_a_concern():
-    """With nothing usable there is no source, so no concerns to carry."""
-    assert DiffAnalyzer._pick_ai_summary_source([schema_rejected(), crashed()]) is None
-
-
 # ---------------------------------------------------------------------------
 # 2. Review loss recorded, not blocking
 # ---------------------------------------------------------------------------
@@ -337,9 +351,7 @@ def test_partial_loss_is_recorded_too():
 # above does the real thing.
 
 
-def test_requested_never_exceeds_what_is_configured():
-    """Measured before the fix: one model configured, one review run, and the
-    payload claimed models_requested 3."""
+def _one_configured_tier_wants_three():
     a = DiffAnalyzer(openrouter_key="x", model_1="openai/m1")
     a._call_provider = lambda p, m, pr: (json.dumps({"codeguard_review": {
         "schema_version": "codeguard.ai_review.v1", "summary": "s",
@@ -347,19 +359,69 @@ def test_requested_never_exceeds_what_is_configured():
         "confidence": 0.9, "rubric_scores": {
             "security_impact": 4, "code_quality": 4, "test_coverage": 4,
             "documentation": 4, "rollback_safety": 4}}}), {"model_id": "m1"})
-    mm = DiffAnalyzer._run_multi_model_review(a, "diff", [], "default", 3, True)
-    assert mm["models_requested"] <= len(a.models)
-    assert mm["models_used"] + mm["models_failed"] == mm["models_requested"]
+    return a, DiffAnalyzer._run_multi_model_review(a, "diff", [], "default", 3, True)
+
+
+def test_the_attempt_reconciles_and_the_tier_ask_survives():
+    """Both numbers, because there are two facts.
+
+    An earlier fix made models_requested mean "attempted" so that
+    used + failed would reconcile with it. The arithmetic did tidy up, by
+    deleting the only record that the tier had asked for three. This asserts
+    the reconciliation AND that the ask is still there to be read.
+    """
+    a, mm = _one_configured_tier_wants_three()
+    assert mm["models_attempted"] <= len(a.models)
+    assert mm["models_used"] + mm["models_failed"] == mm["models_attempted"]
+    assert mm["models_requested"] == 3, "the tier's ask was overwritten by the attempt"
+
+
+def test_an_under_provisioned_review_is_not_reported_as_complete():
+    """The defect this hid: one reviewer configured, three required, and the
+    coverage record said complete because nothing it tried had failed."""
+    _a, mm = _one_configured_tier_wants_three()
+    assert mm["review_coverage"]["complete"] is False, mm["review_coverage"]
+    assert mm["review_coverage"]["requested"] == 3
+
+
+def test_under_provisioning_is_recorded_as_a_finding():
+    """Not merely logged. A reviewer that was never configured is exactly as
+    absent as one that crashed, and only the crash used to be recorded."""
+    classifier = RiskClassifier(rubric="default")
+    findings = classifier.classify({
+        "files_changed": 1, "lines_added": 1, "lines_removed": 0,
+        "files": [], "sensitive_zones": [],
+        "review_coverage": {
+            "requested": 3, "attempted": 1, "succeeded": 1,
+            "failed": 0, "complete": False, "failures": [],
+        },
+    })["findings"]
+    ids = [f.get("id") for f in findings]
+    assert "AI-COVERAGE" in ids, ids
+
+
+def test_no_providers_configured_is_review_loss_not_clean_coverage():
+    """The branch that had no coverage record at all.
+
+    With AI enabled but no provider reachable, review_coverage fell back to the
+    dataclass default -- attempted 0, complete True -- so a change that wanted
+    review and got none was indistinguishable from a clean one.
+    """
+    cov = DiffAnalyzer._review_coverage([], 2)
+    assert cov["complete"] is False, cov
+    assert cov["requested"] == 2 and cov["succeeded"] == 0
 
 
 def test_the_diagnostics_state_how_many_were_requested():
     """Without this the reader subtracts configured minus used and finds a
     reviewer that was never missing."""
     joined = "\n".join(format_review_diagnostics(
-        configured=3, mmr={"models_used": 2, "models_failed": 0, "models_requested": 2},
+        configured=3,
+        mmr={"models_used": 2, "models_failed": 0,
+             "models_requested": 2, "models_attempted": 2},
     ))
-    assert "requested: 2" in joined, joined
-    assert "used: 2" in joined and "failed: 0" in joined, joined
+    assert "asked for 2" in joined, joined
+    assert "used 2" in joined and "failed 0" in joined, joined
 
 
 def test_the_diagnostics_say_why_configured_and_requested_differ():
@@ -369,9 +431,179 @@ def test_the_diagnostics_say_why_configured_and_requested_differ():
     assert "tier" in joined.lower(), joined
 
 
-def test_the_diagnostics_flag_a_genuine_shortfall():
-    """requested > used + failed means a reviewer really did vanish."""
+def test_the_diagnostics_flag_a_reviewer_that_vanished():
+    """attempted > used + failed means a reviewer really did disappear:
+    tried for, neither counted as a success nor as a failure."""
     joined = "\n".join(format_review_diagnostics(
-        configured=3, mmr={"models_used": 1, "models_failed": 0, "models_requested": 3},
+        configured=3,
+        mmr={"models_used": 1, "models_failed": 0,
+             "models_requested": 3, "models_attempted": 3},
     ))
     assert "unaccounted" in joined.lower(), joined
+
+
+def test_the_diagnostics_flag_an_under_provisioned_tier():
+    """The distinct shortfall, and the one that used to be invisible: every
+    reviewer we attempted succeeded, and the tier still did not get its review.
+    Nothing was 'unaccounted for' -- the reviewers were never there to try."""
+    joined = "\n".join(format_review_diagnostics(
+        configured=1,
+        mmr={"models_used": 1, "models_failed": 0,
+             "models_requested": 3, "models_attempted": 1},
+    ))
+    assert "less than its tier requires" in joined, joined
+    assert "unaccounted" not in joined.lower(), joined
+
+
+# ---------------------------------------------------------------------------
+# 4. An outage must not become an all-clear in code scanning
+# ---------------------------------------------------------------------------
+
+AVAILABILITY = {
+    "id": "AI-COVERAGE", "severity": "low", "rule_id": "ai-availability",
+    "message": "AI review coverage: 0 of 2 reviewers required by the risk tier "
+               "returned a verdict",
+    "file": "", "line": None, "provable": True,
+}
+REAL_FINDING = {
+    "id": "SEC-1", "severity": "high", "rule_id": "hardcoded-secret",
+    "message": "Hardcoded credential", "file": "app.py", "line": 3, "provable": True,
+}
+
+
+def test_an_availability_record_is_not_a_policy_finding():
+    assert is_policy_finding(AVAILABILITY) is False
+    assert is_policy_finding(REAL_FINDING) is True
+
+
+def test_an_outage_alone_does_not_produce_a_sarif_upload():
+    """The regression the filter itself created.
+
+    Filtering inside the exporter left the CALLER's `findings` list truthy, so
+    a total outage on an otherwise clean diff produced a SARIF document with
+    zero results and executionSuccessful true -- the document that tells code
+    scanning every previous alert is resolved. The gate must see the same
+    predicate the exporter does.
+    """
+    assert [f for f in [AVAILABILITY] if is_policy_finding(f)] == []
+
+
+def test_an_outage_does_not_inflate_the_findings_count():
+    """findings_count is documented as policy findings and customers gate on
+    it, so an outage flipping it from 0 to 1 changes their merge outcome."""
+    counted = [f for f in [AVAILABILITY] if is_policy_finding(f)]
+    assert len(counted) == 0
+    both = [f for f in [AVAILABILITY, REAL_FINDING] if is_policy_finding(f)]
+    assert len(both) == 1
+
+
+def test_sarif_still_carries_real_findings_alongside_an_outage():
+    """The filter must not launder genuine alerts into silence."""
+    sarif = SARIFExporter().export([AVAILABILITY, REAL_FINDING], "o/r", "sha")
+    rule_ids = [r["ruleId"] for r in sarif["runs"][0]["results"]]
+    assert rule_ids == ["hardcoded-secret"], rule_ids
+
+
+# ---------------------------------------------------------------------------
+# 5. One predicate, everywhere it decides whether a review counted
+# ---------------------------------------------------------------------------
+
+# NOTE: _should_exit_early also carried the narrow predicate and has been
+# brought into line, but there is deliberately NO test for it. A mutation test
+# showed the two predicates agree on every possible input there -- a rejected
+# review always has confidence 0.0, so it can only pull the average below the
+# early-exit bar. Any test written for that line would pass with the bug
+# present, which is exactly the kind of probe this file exists to stop having.
+
+
+def test_a_rejected_review_is_not_sealed_as_completed_provenance():
+    """Through create_bundle, not through the predicate.
+
+    Asserting review_failed() directly proves only that the predicate works,
+    and the predicate was never the bug -- the bug was which filter the sealing
+    site used. A parse-rejected review has no "error" key, so the narrow filter
+    sealed it as completed review provenance while models_failed counted it as
+    failed: the evidence bundle's own numbers contradicted each other, in the
+    artifact whose whole claim is that the record says what happened.
+    """
+    from unittest.mock import MagicMock
+    from src.bundle_generator import BundleGenerator
+
+    pr = MagicMock()
+    pr.number = 1
+    pr.title = "Test PR"
+    pr.created_at.isoformat.return_value = "2026-02-08T00:00:00Z"
+    pr.user.login = "testuser"
+    pr.base.ref = "main"
+    pr.head.ref = "feature"
+
+    rejected = dict(schema_rejected(), provider="openrouter", model_name="bad",
+                    model_id="bad", prompt_hash="p", response_hash="r")
+    usable = dict(good(), provider="openrouter", model_name="ok",
+                  model_id="ok", prompt_hash="p2", response_hash="r2")
+
+    bundle = BundleGenerator().create_bundle(
+        pr=pr,
+        analysis={
+            "files_changed": 1, "lines_added": 1, "lines_removed": 0,
+            "diff_hash": "sha256:test", "files": [],
+            "multi_model_review": {
+                "reviews": [rejected, usable],
+                "models_used": 1, "models_failed": 1,
+            },
+        },
+        risk_result={"risk_tier": "L1", "findings": [], "requires_approval": False},
+        repository="o/r",
+        commit_sha="sha",
+    )
+
+    # reviews_sealed specifically, not the whole bundle: the raw
+    # multi_model_review is snapshotted elsewhere by design, so a substring
+    # search over the document would pass no matter what this filter did.
+    sealed = None
+    for event in bundle.get("events", []):
+        payload = event.get("payload") or event.get("data") or {}
+        if "reviews_sealed" in payload:
+            sealed = payload["reviews_sealed"]
+            break
+    assert sealed is not None, f"no event carried reviews_sealed: {bundle.keys()}"
+
+    ids = [r.get("model_id") for r in sealed]
+    assert "bad" not in ids, f"a rejected review was sealed as provenance: {ids}"
+    assert ids == ["ok"], ids
+
+
+def test_an_incomplete_review_is_not_a_successful_sarif_run():
+    """The property that does not depend on the caller getting the gate right.
+
+    executionSuccessful was hardcoded true, so a document with zero results
+    read as a completed scan that found nothing -- which is how code scanning
+    is told to close prior alerts. If a reviewer did not report, the run did
+    not see everything, and must not claim it did.
+    """
+    outage_only = SARIFExporter().export([AVAILABILITY], "o/r", "sha")
+    assert outage_only["runs"][0]["results"] == []
+    assert outage_only["runs"][0]["invocations"][0]["executionSuccessful"] is False
+
+    partial = SARIFExporter().export([AVAILABILITY, REAL_FINDING], "o/r", "sha")
+    assert partial["runs"][0]["invocations"][0]["executionSuccessful"] is False
+
+    clean = SARIFExporter().export([REAL_FINDING], "o/r", "sha")
+    assert clean["runs"][0]["invocations"][0]["executionSuccessful"] is True
+
+
+def test_a_broken_reviewer_is_not_quoted_to_its_peers():
+    """The laundering path one round further on.
+
+    A rejected review's fabricated request_changes verdict, and for a rejected
+    answer its rejection notice, were rendered into the cross-check prompt as
+    an anonymous "Reviewer N". A peer that agreed with it returned the
+    malfunction as a genuine finding about the customer's code.
+    """
+    a = DiffAnalyzer.__new__(DiffAnalyzer)
+    prompt = DiffAnalyzer._build_crosscheck_prompt(
+        a, "diff", good(), [schema_rejected(), crashed(), good()], 2,
+    )
+    assert "rejected" not in prompt.lower(), prompt[:400]
+    assert prompt.count("### Reviewer") == 1, "a failed reviewer was quoted as a peer"
+    assert "No test for the zero-size case" in prompt, "the real peer opinion went missing"

@@ -764,16 +764,21 @@ class RiskClassifier:
         # merge outcome changes. Visibility comes from the log line and the
         # bundle, not from the severity.
         coverage = analysis.get("review_coverage") or {}
-        attempted = coverage.get("attempted")
-        if attempted:
+        # Against what the TIER asked for, not what was attempted. Keying off
+        # `attempted` meant the two ways of getting no review looked opposite:
+        # a reviewer that crashed was recorded, and a reviewer that was never
+        # configured to exist was not -- so a change needing three reviewers
+        # and finding none reported zero of zero, and passed as clean.
+        requested = coverage.get("requested", coverage.get("attempted")) or 0
+        if requested:
             succeeded = coverage.get("succeeded", 0)
-            if succeeded < attempted:
+            if succeeded < requested:
                 findings.append(Finding(
                     id="AI-COVERAGE",
                     severity="low",
                     message=(
-                        f"AI review coverage: {succeeded} of {attempted} reviewers "
-                        "returned a verdict"
+                        f"AI review coverage: {succeeded} of {requested} reviewers "
+                        "required by the risk tier returned a verdict"
                     ),
                     file="", line=None,
                     rule_id="ai-availability", zone=None, provable=True,
