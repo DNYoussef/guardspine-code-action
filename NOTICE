@@ -5,10 +5,12 @@ Licensed under the Business Source License 1.1. See LICENSE.
 
 PII scanning in this product is powered by PII-Shield
 (https://github.com/pii-shield/pii-shield), authored by aragossa and
-originally released under Apache License 2.0. This includes lib/pii-shield.wasm
-and the integration code. aragossa has confirmed in writing that the PII-Shield
-code and the pii-shield.wasm binary may be redistributed under the Business
-Source License 1.1. PII-Shield remains the copyright of its author.
+originally released under Apache License 2.0. It is consumed as the
+published pii-shield-wasi package installed via pip and used unmodified
+(no PII-Shield binary is vendored in this repository). aragossa has
+confirmed in writing that the PII-Shield code may be redistributed under
+the Business Source License 1.1. PII-Shield remains the copyright of its
+author.
 
 This product depends on third-party Python packages installed via pip and used
 unmodified, each under its own license, including: PyGithub (LGPL-3.0),

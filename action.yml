@@ -93,17 +93,17 @@ inputs:
     required: false
     default: 'false'
   pii_shield_mode:
-    description: 'PII-Shield mode: auto, local, or remote'
+    description: 'PII-Shield mode. Redaction always runs in-process via WASM; auto and remote both sanitize, local is a deprecated passthrough (no redaction)'
     required: false
     default: 'auto'
   pii_shield_endpoint:
-    description: 'Optional PII-Shield HTTP endpoint for remote redaction'
+    description: 'DEPRECATED and ignored. PII-Shield runs in-process via WASM and makes no network requests; a value here only produces a warning'
     required: false
   pii_shield_api_key:
-    description: 'API key for PII-Shield endpoint (optional)'
+    description: 'DEPRECATED and ignored. There is no PII-Shield endpoint to authenticate to'
     required: false
   pii_shield_timeout:
-    description: 'PII-Shield HTTP timeout in seconds'
+    description: 'DEPRECATED and ignored. There is no HTTP request to time out'
     required: false
     default: '5'
   pii_shield_fail_closed:
@@ -115,9 +115,8 @@ inputs:
     required: false
     default: 'sha256:00000000'
   pii_safe_regex_list:
-    description: 'JSON array of regex patterns that bypass PII-Shield entropy detection (e.g., [{"pattern": "^[a-f0-9]{40,64}$", "name": "SafeGitSHA"}])'
+    description: 'DEPRECATED and ignored. The in-process engine (pii-shield-wasi 2.1.1) does not accept a caller-supplied safe-regex list; hash and signature fields are preserved automatically instead'
     required: false
-    default: '[{"pattern": "^[a-f0-9]{40,64}$", "name": "SafeGitSHA"}, {"pattern": "_hash$", "name": "HashFieldSuffix"}]'
   pii_shield_sanitize_comments:
     description: 'Sanitize PR comments with PII-Shield before publishing'
     required: false

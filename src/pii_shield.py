@@ -1,156 +1,97 @@
 """
-PII-Shield integration spike.
+PII-Shield integration. IN-PROCESS ONLY -- there is no HTTP client.
 
-Supports:
-  - remote PII-Shield redaction/detection endpoint
-  - provider findings ingestion for risk scoring
-  - fail-open/fail-closed behavior
+Redaction runs locally through the published `pii-shield-wasi` package.
+Nothing in this module makes a network request, and that is the point:
+three rounds of hardening once went into defending an outbound call --
+SSRF validation, cloud-metadata blocking, connect-time DNS-rebind pinning
+-- and removing the call removes that entire class. A request that is
+never made has no SSRF surface, no rebinding surface, and no API key to
+leak in a header.
+
+How the old shape hid the safe path, recorded because it is the reason
+this change was needed rather than merely nice. `_sanitize_remote`
+dispatched on `endpoint.lower().startswith("http")`: HTTP when the value
+looked like a URL, WASM otherwise -- and action.yml documents that field
+as "Optional PII-Shield HTTP endpoint". So the in-process path was
+reachable only by putting a non-http value into a field documented as
+http. Worse, sanitization ran only when an endpoint was set, so with the
+field empty PII-Shield did nothing at all.
+
+Now: no endpoint is required or used, and sanitization happens whenever
+the shield is enabled.
+
+WHAT THE ENGINE DOES NOT PROVIDE, and how that gap is closed. The old
+HTTP API returned structured findings and metadata; the package exposes
+`redact(str) -> str`. An earlier version of this docstring claimed the
+richer fields had no consumer ("analyzer.py builds sensitive_zones from
+its own analysis"). That claim was checked and found WRONG: entrypoint.py
+merges `to_sensitive_zones()` into the analysis and the RiskClassifier
+scores those zones into the risk tier, so shipping empty signals silently
+removed PII from risk scoring while the pipeline still appeared to score
+it. The fix is local reconstruction: input and redacted output are
+compared line by line, and each changed line becomes a zone carrying a
+line number and a count -- never the matched text. What this does NOT
+recover is categories: the engine reports none, so every reconstructed
+zone is the single constant "pii" and `redactions_by_type` stays empty.
+If per-category findings are wanted later they come from upstream, not
+from re-adding a network call.
 """
 
 
 import hashlib
-import ipaddress
 import json
 import os
-import socket
 import sys
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse
-
-import requests
-import urllib3.connection
 
 
-_LOOPBACK_HOSTNAMES = frozenset({
-    "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
-})
-_CLOUD_METADATA_HOSTNAMES = frozenset({
-    "metadata.google.internal",
-})
-_CLOUD_METADATA_IPS = frozenset({
-    "169.254.169.254",
-    "fd00:ec2::254",
-})
-_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+def _load_wasm_engine():
+    """Import the installed pii-shield-wasi package, not ourselves.
 
+    THIS FILE IS ALSO CALLED pii_shield.py. Whenever src/ is on sys.path
+    -- which it is in several entrypoint layouts, and in the existing test
+    suite -- a bare `import pii_shield` binds to THIS module. A plain
+    import therefore either explodes with "not a package" or, in a
+    slightly different layout, silently returns the wrong thing, which is
+    far worse: sanitization would appear configured and do nothing.
 
-@dataclass(frozen=True)
-class _EndpointTarget:
-    url: str
-    host: str
-    port: int
-    resolved_ip: str | None
+    So the directory containing this file is removed from sys.path for the
+    duration of the import and restored immediately after. Deterministic,
+    and it cannot resolve to us.
+    """
+    import importlib
+    import sys as _sys
 
-
-def _validate_endpoint(url: str) -> None:
-    """Block SSRF-prone endpoints (cloud metadata, non-global IPs, loopback)."""
-    _resolve_endpoint_target(url)
-
-
-def _resolve_endpoint_target(url: str) -> _EndpointTarget:
-    """Validate an outbound endpoint and return the IP to pin at connect time."""
-    parsed = urlparse(url)
-    if parsed.scheme not in ("https", "http"):
-        raise ValueError(f"PII-Shield endpoint must use http(s): {url}")
-    host = parsed.hostname or ""
-    if not host:
-        raise ValueError(f"PII-Shield endpoint must include a host: {url}")
-
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    normalized_host = host.rstrip(".").lower()
-    allow_private = _private_endpoint_override_enabled()
-
-    if normalized_host in _CLOUD_METADATA_HOSTNAMES:
-        raise ValueError(f"PII-Shield endpoint cannot target cloud metadata: {url}")
-
-    # Block known loopback hostnames
-    if normalized_host in _LOOPBACK_HOSTNAMES and not allow_private:
-        raise ValueError(f"PII-Shield endpoint cannot target localhost: {url}")
-
+    here = os.path.dirname(os.path.abspath(__file__))
+    saved_path = list(_sys.path)
+    saved_module = _sys.modules.pop("pii_shield", None)
     try:
-        ip = ipaddress.ip_address(host)
-        _validate_resolved_ip(ip, url, allow_private)
-        return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=str(ip))
-    except ValueError as exc:
-        if "PII-Shield endpoint" in str(exc):
-            raise
-
-    try:
-        resolved = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except socket.gaierror:
-        # DNS failure will fail naturally at call time. There is no IP to pin.
-        return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=None)
-
-    resolved_ips: list[str] = []
-    for _family, _type, _proto, _canonname, sockaddr in resolved:
-        resolved_ip = ipaddress.ip_address(sockaddr[0])
-        _validate_resolved_ip(resolved_ip, url, allow_private)
-        resolved_ips.append(str(resolved_ip))
-
-    pinned_ip = resolved_ips[0] if resolved_ips else None
-    return _EndpointTarget(url=url, host=normalized_host, port=port, resolved_ip=pinned_ip)
-
-
-def _private_endpoint_override_enabled() -> bool:
-    """Allow private endpoints only for local development, never in Actions."""
-    if os.environ.get("PII_SHIELD_ALLOW_PRIVATE", "").strip().lower() not in _TRUTHY_ENV:
-        return False
-    if os.environ.get("GITHUB_ACTIONS", "").strip().lower() in _TRUTHY_ENV:
-        return False
-    if os.environ.get("CI", "").strip().lower() in _TRUTHY_ENV:
-        return False
-    return True
-
-
-def _validate_resolved_ip(
-    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
-    url: str,
-    allow_private: bool,
-) -> None:
-    ipv4_mapped = getattr(ip, "ipv4_mapped", None)
-    if str(ip).lower() in _CLOUD_METADATA_IPS or str(ipv4_mapped).lower() in _CLOUD_METADATA_IPS:
-        raise ValueError(f"PII-Shield endpoint cannot target cloud metadata: {url}")
-    if ip.is_multicast:
-        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
-    if ipv4_mapped is not None and not allow_private and not ipv4_mapped.is_global:
-        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
-    if allow_private:
-        return
-    if not ip.is_global:
-        raise ValueError(f"PII-Shield endpoint must resolve to a public global IP: {url}")
-
-
-@contextmanager
-def _pin_endpoint_connection(target: _EndpointTarget):
-    """Pin urllib3's socket connect for target.host to target.resolved_ip."""
-    if not target.resolved_ip:
-        yield
-        return
-
-    connection_module = urllib3.connection.connection
-    original_create_connection = connection_module.create_connection
-
-    def create_pinned_connection(address, *args, **kwargs):
-        host, port = address
-        if str(host).rstrip(".").lower() == target.host and int(port) == target.port:
-            return original_create_connection((target.resolved_ip, port), *args, **kwargs)
-        return original_create_connection(address, *args, **kwargs)
-
-    connection_module.create_connection = create_pinned_connection
-    try:
-        yield
+        _sys.path = [p for p in _sys.path
+                     if os.path.abspath(p or os.getcwd()) != here]
+        scanner = importlib.import_module("pii_shield.scanner")
+        return scanner.PiiShield, scanner.PiiShieldConfig
     finally:
-        connection_module.create_connection = original_create_connection
+        _sys.path = saved_path
+        # Put our own module back exactly as it was: leaving the package
+        # bound under this name would shadow US for every later import.
+        if saved_module is not None:
+            _sys.modules["pii_shield"] = saved_module
+        else:
+            _sys.modules.pop("pii_shield", None)
 
 
+# Retained from the pre-WASM module: these are the hash-field whitelist
+# and the safe-regex default, neither of which had anything to do with
+# the deleted HTTP transport. They were caught in the same block only
+# because they sat next to the endpoint helpers.
 _HASH_FIELD_SUFFIXES = ("_hash",)
+
 _HASH_FIELD_EXACT = frozenset({
     "signature_value", "public_key_id", "root_hash",
     "chain_hash", "previous_hash", "final_hash",
 })
-
 
 _DEFAULT_SAFE_REGEX_LIST = [
     {
@@ -291,8 +232,36 @@ class PIIShieldClient:
             _DEFAULT_SAFE_REGEX_LIST
         )
 
+        # Accepted and IGNORED. Workflows in the wild still pass
+        # pii_shield_endpoint, and breaking them would be a worse outcome
+        # than carrying a dead input -- but it must never route anything
+        # off-box again, so it is not stored and not dialled.
         if self.endpoint:
-            _validate_endpoint(self.endpoint)
+            print(
+                "::warning::pii_shield_endpoint is ignored. PII-Shield now "
+                "runs in-process via WASM and makes no network requests.",
+                file=sys.stderr,
+            )
+        self.endpoint = None
+
+        # Also inert, and deliberately so. In pii-shield-wasi 2.1.1 the
+        # engine's PII_SAFE_REGEX_LIST variable cannot help and can hurt
+        # (measured, both halves): a well-formed [{"pattern","name"}] list
+        # is accepted and IGNORED -- output is identical even with a ".*"
+        # wildcard -- while anything else terminates the WASM runtime with
+        # exit 1 from loadConfig. The old vendored binary honoured the list,
+        # which is how a wildcard once switched redaction off entirely; now
+        # the knob is a no-op at best and an outage at worst, so it is
+        # never forwarded. Warn only when the CALLER passed one -- the
+        # default above fills self.safe_regex_list on every run, and
+        # warning on our own default would train users to ignore warnings.
+        if safe_regex_list:
+            print(
+                "::warning::pii_shield_safe_regex_list is ignored. The "
+                "in-process engine does not accept a caller-supplied "
+                "safe-regex list.",
+                file=sys.stderr,
+            )
 
         if self.mode not in self._VALID_MODES:
             raise ValueError(
@@ -356,23 +325,10 @@ class PIIShieldClient:
                 metadata={},
             )
 
-        if self.mode == "remote" and not self.endpoint:
-            if self.fail_closed:
-                raise PIIShieldError("PII-Shield remote mode requires pii_shield_endpoint")
-            return PIIShieldResult(
-                sanitized_text=text,
-                changed=False,
-                redaction_count=0,
-                redactions_by_type={},
-                mode="remote",
-                provider="passthrough",
-                input_hash=input_hash,
-                output_hash=input_hash,
-                signals=[],
-                metadata={"warning": "remote mode selected but pii_shield_endpoint is not configured"},
-            )
-
-        if self.mode in {"auto", "remote"} and self.endpoint:
+        # No endpoint condition. Requiring one is what made PII-Shield a
+        # no-op in production: the field is documented as an HTTP endpoint,
+        # nobody set it, so nothing ever ran.
+        if self.mode in {"auto", "remote"}:
             try:
                 return self._sanitize_remote(
                     text=text,
@@ -452,11 +408,18 @@ class PIIShieldClient:
         work = _copy.deepcopy(document) if isinstance(document, (dict, list)) else document
         preserved = _extract_hash_fields(work) if isinstance(work, (dict, list)) else {}
 
+        # separators MUST keep the space after the colon. Measured against
+        # pii-shield-wasi 2.1.1: with compact '":"' the engine redacts
+        # NOTHING inside the JSON string values -- '{"a":"alice@x.com"}'
+        # comes back untouched while '{"a": "alice@x.com"}' is redacted.
+        # With the old compact form, bundle and SARIF sanitization was a
+        # silent no-op. The parse below does not care about whitespace, so
+        # the spaced form costs nothing.
         original_json = json.dumps(
             work,
             ensure_ascii=False,
             sort_keys=True,
-            separators=(",", ":"),
+            separators=(",", ": "),
             default=str,
         )
         result = self.sanitize_text(
@@ -498,90 +461,24 @@ class PIIShieldClient:
         include_findings: bool,
         purpose: str | None,
     ) -> PIIShieldResult:
-        if self.endpoint and self.endpoint.lower().startswith("http"):
-            return self._sanitize_via_http(text, input_format, include_findings, purpose)
+        """Kept as the single entry point so callers are unchanged. The
+        name is now a misnomer -- nothing is remote -- but renaming it is
+        churn in every call site for no behavioural gain."""
         return self._sanitize_via_wasm(text, input_format, include_findings, purpose)
 
-    def _sanitize_via_http(
-        self,
-        text: str,
-        input_format: str,
-        include_findings: bool,
-        purpose: str | None,
-    ) -> PIIShieldResult:
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        payload = {
-            "text": text,
-            "input_format": input_format,
-            "deterministic": True,
-            "preserve_line_numbers": True,
-            "include_findings": include_findings,
-            "salt_fingerprint": self.salt_fingerprint,
-        }
-        if self.safe_regex_list:
-            try:
-                parsed = json.loads(self.safe_regex_list)
-                if isinstance(parsed, list):
-                    payload["safe_regex_list"] = parsed
-            except (json.JSONDecodeError, TypeError):
-                pass  # Invalid JSON -- skip, PII-Shield will use its own defaults
-        if purpose:
-            payload["purpose"] = purpose
-
-        endpoint_target = _resolve_endpoint_target(self.endpoint)
-        with _pin_endpoint_connection(endpoint_target):
-            response = requests.post(
-                self.endpoint,
-                json=payload,
-                headers=headers,
-                timeout=self.timeout_seconds,
-                allow_redirects=False,
-            )
-        if 300 <= response.status_code < 400:
-            raise ValueError("PII-Shield endpoint redirects are not allowed")
-        response.raise_for_status()
-        body = response.json()
-
-        sanitized = (
-            body.get("sanitized_text")
-            or body.get("redacted_text")
-            or body.get("text")
-            or body.get("output")
-        )
-        if not isinstance(sanitized, str):
-            raise ValueError("Remote PII-Shield response did not include sanitized text")
-
-        redactions_by_type = self._extract_redactions_by_type(body)
-        redaction_count = body.get("redaction_count")
-        if not isinstance(redaction_count, int):
-            redaction_count = sum(redactions_by_type.values())
-            if redaction_count == 0 and isinstance(body.get("redactions"), list):
-                redaction_count = len(body["redactions"])
-        redaction_count = max(0, redaction_count)
-
-        signals = self._extract_signals(body, redactions_by_type)
-
-        return PIIShieldResult(
-            sanitized_text=sanitized,
-            changed=(sanitized != text),
-            redaction_count=redaction_count,
-            redactions_by_type=redactions_by_type,
-            mode="remote",
-            provider=body.get("provider", "pii-shield-remote"),
-            input_hash=self._sha256(text),
-            output_hash=self._sha256(sanitized),
-            signals=signals,
-            metadata={
-                "status_code": response.status_code,
-                "schema_version": body.get("schema_version"),
-                "engine_version": body.get("engine_version") or body.get("version"),
-                "model": body.get("model"),
-                "input_format": input_format,
-            },
-        )
+    def _redact(self, text: str) -> str:
+        """The single call into the engine. Isolated so a test can make it
+        fail and prove fail-closed still holds after the transport change."""
+        wasm_shield_cls, wasm_config_cls = _load_wasm_engine()
+        shield = wasm_shield_cls(wasm_config_cls(
+            salt=self.salt_fingerprint or None,
+            # The engine's own policy knob. Ours is enforced by the caller
+            # (sanitize_text re-raises), but passing it through means the
+            # engine does not quietly fail open underneath a fail-closed
+            # configuration.
+            fail_policy="closed" if self.fail_closed else "open",
+        ))
+        return shield.redact(text)
 
     def _sanitize_via_wasm(
         self,
@@ -590,50 +487,104 @@ class PIIShieldClient:
         include_findings: bool,
         purpose: str | None,
     ) -> PIIShieldResult:
-        # WASM Integration: Use local WASM client instead of HTTP
-        try:
-            from .adapters.pii_wasm_client import PIIWasmClient
-        except ImportError:
-            # Fallback for when running without package context (e.g. local tests)
-            from adapters.pii_wasm_client import PIIWasmClient
-        
-        client = PIIWasmClient()
-        # Note: WASM client currently only supports text redaction (ScanAndRedact)
-        # It does not yet support structured findings or config override via arguments in the same way 
-        # as the HTTP API (payload).
-        # However, for "The Leak Test", we primarily need redaction.
-        
-        # TODO: Pass configuration (safe_regex_list, etc) to WASM if not already handled by ENV vars.
-        # The current WASM implementation relies on ENV vars read by the Go process.
-        
-        try:
-            sanitized = client.redact(text)
-        except Exception as exc:
-             raise RuntimeError(f"WASM PII-Shield failed: {exc}") from exc
+        """In-process redaction via the published pii-shield-wasi package.
 
-        # Mocking the rich response structure of the HTTP API for compatibility
-        # iterating over the redacted string to check if it changed
-        changed = (sanitized != text)
-        redaction_count = 0
-        if changed:
-            # Simple heuristic since WASM doesn't return count yet
-            redaction_count = sanitized.count("[HIDDEN")
-            
+        Previously this drove wasmtime directly against a 4 MB
+        `lib/pii-shield.wasm` vendored into the repo. Using the package
+        means upstream fixes arrive by version bump instead of by copying a
+        binary -- which matters, because 2.1.1 carries fixes for redaction
+        cascading past a hit and for mangling unbalanced quotes, both of
+        which would corrupt a diff we then present as evidence.
+        """
+        try:
+            sanitized = self._redact(text)
+        except Exception as exc:
+            raise RuntimeError(f"WASM PII-Shield failed: {exc}") from exc
+
+        changed = sanitized != text
+        # The engine returns text, not a count. Counting its own marker is
+        # the honest approximation available, and it is reported as a count
+        # rather than as findings so nobody mistakes it for structured
+        # detection the package does not provide.
+        redaction_count = sanitized.count("[HIDDEN") if changed else 0
+
+        # Reconstruct zones from the text the engine DID give us. When this
+        # was signals=[], entrypoint.py still merged to_sensitive_zones()
+        # and the RiskClassifier still scored the result -- so PII silently
+        # contributed zero risk while the pipeline looked like it was
+        # scoring it. Line-diffing input against output recovers real line
+        # numbers with no network call.
+        signals = self._signals_from_line_diff(text, sanitized) if changed else []
+
         return PIIShieldResult(
             sanitized_text=sanitized,
             changed=changed,
             redaction_count=redaction_count,
-            redactions_by_type={}, # WASM simple output doesn't provide this yet
+            # Still empty, and honestly so: redact(str) -> str reports no
+            # categories, and inventing per-type counts here would be
+            # fabricated detection detail. Zone-level signal now comes from
+            # the line diff above instead.
+            redactions_by_type={},
             mode="wasm-local",
-            provider="pii-shield-wasm",
+            provider="pii-shield-wasi",
             input_hash=self._sha256(text),
             output_hash=self._sha256(sanitized),
-            signals=[], # WASM simple output doesn't provide signals yet
+            signals=signals,
             metadata={
                 "input_format": input_format,
                 "engine": "wasm",
+                "transport": "in-process",
             },
         )
+
+    @staticmethod
+    def _signals_from_line_diff(
+        original: str,
+        sanitized: str,
+    ) -> list[dict[str, Any]]:
+        """Recover line-level PII zones by diffing input against output.
+
+        The engine changes only lines that contained PII, so a changed
+        line IS a finding. Each signal is a location and a count, never
+        content: putting the matched value (or even the [HIDDEN:...]
+        token) into a zone would turn risk metadata into a PII sink, the
+        exact failure this module exists to prevent. The zone/category is
+        the constant "pii" because the engine reports no categories --
+        redact(str) -> str -- and inventing one would be false precision;
+        "pii" is also a key the RiskClassifier's zone_severity map scores.
+        """
+        in_lines = original.splitlines()
+        out_lines = sanitized.splitlines()
+
+        def _signal(line: int | None, count: int) -> dict[str, Any]:
+            return {
+                "zone": "pii",
+                "file": "__pii_shield__",
+                "line": line,
+                "detector": "pii_shield",
+                # Engine does not report categories; single honest constant.
+                "category": "pii",
+                "count": count,
+                "content_preview": "",
+            }
+
+        if len(in_lines) == len(out_lines):
+            signals = [
+                # A changed line with no [HIDDEN marker still counts as 1:
+                # the line demonstrably held something the engine removed.
+                _signal(idx, max(1, out.count("[HIDDEN")))
+                for idx, (src, out) in enumerate(zip(in_lines, out_lines), start=1)
+                if src != out
+            ]
+            if signals:
+                return signals
+
+        # Line counts differ (engine reflowed) or the only change was
+        # outside splitlines' view (e.g. a trailing newline): zipping would
+        # attribute PII to the wrong lines, so degrade to one coarse
+        # whole-document zone. Coarse beats silent -- returning [] here is
+        # the exact regression the caller's test suite pins.
+        return [_signal(None, max(1, sanitized.count("[HIDDEN")))]
 
     @staticmethod
     def _extract_redactions_by_type(body: dict[str, Any]) -> dict[str, int]:

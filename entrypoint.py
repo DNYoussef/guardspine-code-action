@@ -511,13 +511,12 @@ def main():
     pii_shield_sanitize_comments = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_COMMENTS", "true"))
     pii_shield_sanitize_bundle = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_BUNDLE", "true"))
     pii_shield_sanitize_sarif = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_SARIF", "true"))
-    pii_safe_regex_list = get_env(
-        "INPUT_PII_SAFE_REGEX_LIST",
-        '[{"pattern": "^[a-f0-9]{40,64}$", "name": "SafeGitSHA"}, {"pattern": "_hash$", "name": "HashFieldSuffix"}]',
-    )
-    # Forward PII_SAFE_REGEX_LIST to the PII-Shield sidecar via env var
-    # (v1.2.0+ reads this to bypass entropy checks for whitelisted patterns)
-    os.environ["PII_SAFE_REGEX_LIST"] = pii_safe_regex_list
+    # Read but no longer forwarded anywhere. The old code exported this as
+    # an environment variable for the engine; in pii-shield-wasi 2.1.1 that
+    # variable is ignored when it parses and terminates the WASM runtime
+    # when it does not (measured) -- so exporting it turned a config typo
+    # into a total redaction outage. The client warns that it is ignored.
+    pii_safe_regex_list = get_env("INPUT_PII_SAFE_REGEX_LIST")
     pii_client = PIIShieldClient(
         enabled=pii_shield_enabled,
         mode=pii_shield_mode,

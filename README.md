@@ -30,7 +30,7 @@ When an auditor asks "How did this payment logic change get approved?", GitHub g
 | `OPENROUTER_API_KEY` | Pick one | Recommended - single key, 100+ models |
 | `ANTHROPIC_API_KEY` | Pick one | Direct Claude access |
 | `OPENAI_API_KEY` | Pick one | Direct GPT access |
-| `PII_SHIELD_API_KEY` | Optional | Enable [PII-Shield](#pii-shield-integration) secret redaction |
+| `PII_SHIELD_API_KEY` | Deprecated | No longer used. [PII-Shield](#pii-shield-integration) runs in-process; enable with `pii_shield_enabled: true` |
 
 Ollama requires no API key (self-hosted, air-gapped).
 
@@ -55,11 +55,9 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
           risk_threshold: L3
-          # PII-Shield: strip secrets from AI prompts & evidence bundles
+          # PII-Shield: strip secrets from AI prompts & evidence bundles.
+          # Runs in-process via WASM -- no endpoint or API key needed.
           pii_shield_enabled: true
-          pii_shield_endpoint: ${{ vars.PII_SHIELD_ENDPOINT }}  # or omit for local mode
-        env:
-          PII_SHIELD_API_KEY: ${{ secrets.PII_SHIELD_API_KEY }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
@@ -74,7 +72,7 @@ jobs:
 pip install guardspine-verify && guardspine-verify .guardspine/bundles/*.json
 ```
 
-> **Troubleshooting**: Missing artifact? Ensure `bundle_dir` matches upload path. Hard fail on L4? Set `fail_on_high_risk: false` (default). No AI review? Provide at least one API key and set `ai_review: true` (default). PII-Shield failing? Check endpoint connectivity or set `pii_shield_fail_closed: false` for advisory mode.
+> **Troubleshooting**: Missing artifact? Ensure `bundle_dir` matches upload path. Hard fail on L4? Set `fail_on_high_risk: false` (default). No AI review? Provide at least one API key and set `ai_review: true` (default). PII-Shield failing? It runs in-process (no endpoint to check); set `pii_shield_fail_closed: false` for advisory mode.
 
 ---
 
@@ -190,7 +188,7 @@ Runtime dependency floors (`requirements.in`; locked with hashes in
 | `guardspine-kernel>=0.2.0` | Evidence bundle types and canonical JSON |
 | `openai>=1.0.0` | OpenAI/OpenRouter API adapter |
 | `anthropic>=0.18.0` | Anthropic API adapter |
-| `wasmtime>=16.0.0` | WASM runtime for PII-Shield local mode |
+| `pii-shield-wasi==2.1.1` | In-process PII-Shield redaction engine (WASM) |
 | `toml==0.10.2` | TOML parsing |
 
 The decision engine (`src/decision_engine.py`) is the canonical copy. It was originally developed in `guardspine-product`, which was frozen on 2026-04-04. There is no upstream to sync from. This file is self-contained (depends only on stdlib + yaml) and is owned by this repo.
@@ -709,23 +707,24 @@ The raw diff is **never** modified. PII-Shield operates on copies sent to AI mod
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
     pii_shield_enabled: true
-    pii_shield_endpoint: https://pii-shield.your-org.internal/sanitize
     pii_shield_salt_fingerprint: sha256:your-org-salt-fingerprint
     pii_shield_fail_closed: true
     pii_shield_sanitize_comments: true
     pii_shield_sanitize_bundle: true
     pii_shield_sanitize_sarif: true
-  env:
-    PII_SHIELD_API_KEY: ${{ secrets.PII_SHIELD_API_KEY }}
 ```
+
+Redaction runs in-process on the Actions runner via the published
+`pii-shield-wasi` WASM package. No endpoint, API key, or network access is
+required, and nothing being sanitized leaves the runner.
 
 | Input | Default | Description |
 |-------|---------|-------------|
 | `pii_shield_enabled` | `false` | Enable PII-Shield sanitization |
-| `pii_shield_mode` | `auto` | Detection mode: `auto`, `local`, or `remote` |
-| `pii_shield_endpoint` | `""` | Remote PII-Shield API URL (empty = local mode) |
-| `pii_shield_api_key` | `""` | API key for remote PII-Shield endpoint |
-| `pii_shield_timeout` | `5` | HTTP timeout in seconds for remote calls |
+| `pii_shield_mode` | `auto` | `auto` and `remote` both sanitize in-process; `local` is a deprecated passthrough (no redaction) |
+| `pii_shield_endpoint` | `""` | Deprecated, ignored. Redaction is in-process; a value only produces a warning |
+| `pii_shield_api_key` | `""` | Deprecated, ignored. There is no endpoint to authenticate to |
+| `pii_shield_timeout` | `5` | Deprecated, ignored. There is no HTTP request to time out |
 | `pii_shield_salt_fingerprint` | `sha256:00000000` | Non-secret fingerprint identifying the HMAC salt |
 | `pii_shield_fail_closed` | `true` | Fail the action if sanitization errors occur |
 | `pii_shield_sanitize_comments` | `true` | Sanitize PR comments before posting |
@@ -771,10 +770,8 @@ codeguard-action/
     pr_commenter.py       Decision Card rendering and posting
     sarif_exporter.py     SARIF output for GitHub Security tab
     canonical_json.py     RFC 8785 canonical JSON serialization
-    pii_shield.py         PII-Shield client (local + remote modes)
+    pii_shield.py         PII-Shield client (in-process WASM, no network)
     decision_profiles/    YAML policy files (standard, strict, advisory)
-    adapters/
-      pii_wasm_client.py  WASM-based PII-Shield for local mode
   tests/                  Test suite
   eval/                   Evaluation harness
   docs/                   Documentation and demo images
