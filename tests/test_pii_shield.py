@@ -1,132 +1,48 @@
-"""Tests for provider-first PII-Shield integration behavior."""
+"""Behavioral tests for the in-process PII-Shield client.
 
-import os
-import socket
+This file used to test the HTTP transport: SSRF endpoint validation,
+DNS-rebind pinning, redirect rejection, and the request payload (including
+safe_regex_list forwarding). The HTTP client was deleted on purpose --
+committed in writing upstream -- so those tests fell into two groups:
+
+DELETED, because the property died with the network call:
+  - TestEndpointValidation (12 tests). Every one asserted that a hostile
+    endpoint URL was refused before we dialled it. Nothing is dialled any
+    more; `tests/test_wasm_only_no_http.py` proves no HTTP library is even
+    imported. An SSRF test for a request that is never made protects
+    nothing.
+  - Connect-time IP pinning and redirect rejection, for the same reason.
+  - TestSafeRegexList / TestDefaultSafeRegexList. They asserted a caller
+    regex list reached the engine via the request payload. It cannot, and
+    that is deliberate: in pii-shield-wasi 2.1.1 the PII_SAFE_REGEX_LIST
+    variable is ignored when it parses (measured: identical output with a
+    wildcard) and terminates the runtime when it does not. Either way a
+    caller-supplied list can no longer influence redaction, and
+    test_wasm_config.py gates that we never populate the variable.
+
+REWRITTEN here, because only the mechanism moved:
+  - Fail-open / fail-closed on engine failure (was: on network failure).
+  - JSON document sanitization: structure preserved, parse errors honoured
+    per fail policy.
+  - Hash/signature field preservation: MORE load-bearing than before,
+    because the in-process engine redacts bare SHA-256 hex on sight, so
+    extract-before / reinject-after is the only thing keeping evidence
+    chain hashes verifiable.
+
+Engine failures are injected at `PIIShieldClient._redact`, the seam the
+production code isolates for exactly this purpose.
+"""
+
+import json
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
-
-import requests
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT))
 
-import pii_shield
-from pii_shield import PIIShieldClient, PIIShieldError
-
-
-class TestEndpointValidation(unittest.TestCase):
-    """H7: SSRF prevention via URL validation on pii_shield_endpoint."""
-
-    def test_rejects_cloud_metadata_ip(self):
-        with self.assertRaises(ValueError, msg="cloud metadata"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="http://169.254.169.254/latest/meta-data/",
-            )
-
-    def test_rejects_google_metadata_host(self):
-        with self.assertRaises(ValueError, msg="cloud metadata"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="http://metadata.google.internal/computeMetadata/v1/",
-            )
-
-    def test_rejects_private_ip(self):
-        with self.assertRaises(ValueError, msg="private IP"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="http://10.0.0.1/shield",
-            )
-
-    def test_rejects_192_168_private_ip(self):
-        with self.assertRaises(ValueError, msg="private IP"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="http://192.168.1.1/shield",
-            )
-
-    def test_rejects_link_local_ipv6_metadata_ip(self):
-        with self.assertRaises(ValueError, msg="cloud metadata"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="http://[fd00:ec2::254]/latest/meta-data/",
-            )
-
-    def test_rejects_ipv4_mapped_metadata_ip_even_with_private_override(self):
-        with patch.dict(os.environ, {"PII_SHIELD_ALLOW_PRIVATE": "true"}, clear=True):
-            with self.assertRaises(ValueError, msg="cloud metadata"):
-                PIIShieldClient(
-                    enabled=True, mode="remote",
-                    endpoint="http://[::ffff:169.254.169.254]/latest/meta-data/",
-                )
-
-    def test_rejects_multicast_ip(self):
-        with self.assertRaises(ValueError, msg="multicast"):
-            PIIShieldClient(
-                enabled=True,
-                mode="remote",
-                endpoint="http://224.0.0.1/shield",
-            )
-
-    @patch("pii_shield.socket.getaddrinfo")
-    def test_rejects_hostname_resolving_to_private_ip(self, mock_getaddrinfo):
-        mock_getaddrinfo.return_value = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.10", 443)),
-        ]
-
-        with self.assertRaises(ValueError, msg="resolved private IP"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="https://shield.example/api",
-            )
-
-    def test_private_override_is_dev_only(self):
-        with patch.dict(
-            os.environ,
-            {"PII_SHIELD_ALLOW_PRIVATE": "true", "GITHUB_ACTIONS": "true"},
-            clear=True,
-        ):
-            with self.assertRaises(ValueError):
-                PIIShieldClient(
-                    enabled=True,
-                    mode="remote",
-                    endpoint="http://10.0.0.1/shield",
-                )
-
-        with patch.dict(os.environ, {"PII_SHIELD_ALLOW_PRIVATE": "true"}, clear=True):
-            client = PIIShieldClient(
-                enabled=True,
-                mode="remote",
-                endpoint="http://10.0.0.1/shield",
-            )
-        self.assertEqual(client.endpoint, "http://10.0.0.1/shield")
-
-    def test_rejects_non_http_scheme(self):
-        with self.assertRaises(ValueError, msg="http(s)"):
-            PIIShieldClient(
-                enabled=True, mode="remote",
-                endpoint="ftp://shield.example.com/api",
-            )
-
-    def test_allows_valid_https_endpoint(self):
-        client = PIIShieldClient(
-            enabled=True, mode="remote",
-            endpoint="https://shield.example.com/api/sanitize",
-        )
-        self.assertEqual(client.endpoint, "https://shield.example.com/api/sanitize")
-
-    def test_allows_hostname_not_ip(self):
-        client = PIIShieldClient(
-            enabled=True, mode="remote",
-            endpoint="http://pii-shield.internal.corp:8080/v1",
-        )
-        self.assertEqual(client.endpoint, "http://pii-shield.internal.corp:8080/v1")
-
-    def test_none_endpoint_skips_validation(self):
-        client = PIIShieldClient(enabled=True, mode="auto", endpoint=None)
-        self.assertIsNone(client.endpoint)
+from src.pii_shield import PIIShieldClient, PIIShieldError
 
 
 class TestPIIShieldModes(unittest.TestCase):
@@ -139,553 +55,226 @@ class TestPIIShieldModes(unittest.TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, text)
 
-    def test_local_mode_is_explicit_passthrough(self):
+    def test_local_mode_with_shield_enabled_raises(self):
+        """mode='local' used to return the ORIGINAL text with the shield
+        enabled -- a second non-WASM path that shipped raw PII while the
+        workflow believed PII-Shield was on. Enabled + local must now fail
+        loudly, never emit input as if it were sanitized output."""
         diff = "+email='alice@example.com'\n"
-        client = PIIShieldClient(enabled=True, mode="local")
-        result = client.sanitize_diff(diff)
+        with self.assertWarns(DeprecationWarning):
+            client = PIIShieldClient(enabled=True, mode="local")
 
-        self.assertEqual(result.mode, "local")
-        self.assertEqual(result.provider, "passthrough")
-        self.assertFalse(result.changed)
-        self.assertEqual(result.sanitized_text, diff)
-        self.assertIn("local mode is passthrough", result.to_metadata()["details"].get("warning", ""))
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff(diff)
 
-    def test_remote_mode_without_endpoint_fail_open_passthrough(self):
-        diff = "+token='abc'\n"
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint=None,
-            fail_closed=False,
-        )
-
-        result = client.sanitize_diff(diff)
-        self.assertEqual(result.mode, "remote")
-        self.assertFalse(result.changed)
-        self.assertEqual(result.sanitized_text, diff)
-
-    def test_remote_mode_without_endpoint_defaults_fail_closed(self):
-        client = PIIShieldClient(enabled=True, mode="remote", endpoint=None)
+    def test_local_mode_raises_even_with_fail_closed_false(self):
+        """fail_closed=False is an opt-out for ENGINE OUTAGES, not a license
+        to run a mode that never redacts. The rejection is about the
+        configuration, so the fail policy must not soften it."""
+        with self.assertWarns(DeprecationWarning):
+            client = PIIShieldClient(enabled=True, mode="local", fail_closed=False)
 
         with self.assertRaises(PIIShieldError):
             client.sanitize_diff("+email='alice@example.com'\n")
 
-    def test_remote_mode_without_endpoint_fail_closed_raises(self):
-        client = PIIShieldClient(enabled=True, mode="remote", endpoint=None, fail_closed=True)
-        with self.assertRaises(PIIShieldError):
-            client.sanitize_diff("+email='alice@example.com'\n")
-
-
-class TestPIIShieldRemoteBehavior(unittest.TestCase):
-    @patch("pii_shield.requests.post")
-    def test_remote_mode_parses_redactions_and_signals(self, mock_post):
-        diff = "+email='alice@example.com'\n+api_key='sk_live_123'\n"
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status.return_value = None
-        mock_response.json.return_value = {
-            "provider": "pii-shield-remote",
-            "sanitized_text": "+email='[HIDDEN:e1]'\n+api_key='[HIDDEN:k1]'\n",
-            "redactions_by_type": {"email": 1, "api_key": 1},
-            "redaction_count": 2,
-            "detections": [
-                {"category": "email", "file": "app.py", "line": 1, "text": "alice@example.com"},
-                {"category": "api_key", "file": "app.py", "line": 2, "text": "sk_live_123"},
-            ],
-            "schema_version": "2026-01",
-        }
-        mock_post.return_value = mock_response
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            api_key="k",
-            timeout_seconds=7.5,
-        )
-        result = client.sanitize_diff(diff)
+    def test_legacy_remote_mode_sanitizes_in_process(self):
+        """mode='remote' is a legacy input that workflows in the wild still
+        pass. It used to REQUIRE an endpoint and raise without one -- which
+        is exactly what kept PII-Shield from running in production. Now it
+        must sanitize in-process, endpoint or no endpoint."""
+        client = PIIShieldClient(enabled=True, mode="remote")
+        result = client.sanitize_diff("+email='alice@example.com'\n")
 
         self.assertTrue(result.changed)
-        self.assertEqual(result.redaction_count, 2)
-        self.assertEqual(result.redactions_by_type, {"email": 1, "api_key": 1})
-        self.assertEqual(result.provider, "pii-shield-remote")
+        self.assertNotIn("alice@example.com", result.sanitized_text)
+        self.assertEqual(result.provider, "pii-shield-wasi")
 
-        zones = result.to_sensitive_zones()
-        self.assertEqual(len(zones), 2)
-        self.assertEqual({z["zone"] for z in zones}, {"pii", "entropy_secret"})
 
-        mock_post.assert_called_once()
-        _, kwargs = mock_post.call_args
-        self.assertEqual(kwargs["timeout"], 7.5)
-        self.assertEqual(kwargs["json"]["input_format"], "diff")
-        self.assertTrue(kwargs["json"]["include_findings"])
-        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer k")
+class TestEngineFailurePolicy(unittest.TestCase):
+    """A sanitizer outage must be loud (fail-closed) or honestly recorded
+    (fail-open) -- never a silent leak of raw text presented as sanitized.
+    The transport changed from HTTP to in-process; this property did not."""
 
-    @patch("pii_shield.socket.getaddrinfo")
-    @patch("pii_shield.requests.post")
-    def test_remote_request_pins_validated_ip_during_post(self, mock_post, mock_getaddrinfo):
-        mock_getaddrinfo.return_value = [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443)),
-        ]
-        connected_addresses = []
-
-        def fake_create_connection(address, *args, **kwargs):
-            connected_addresses.append(address)
-            return object()
-
-        def fake_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            pii_shield.urllib3.connection.connection.create_connection(
-                ("shield.example", 443),
-                timeout=timeout,
-            )
-            response = Mock()
-            response.status_code = 200
-            response.raise_for_status.return_value = None
-            response.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return response
-
-        mock_post.side_effect = fake_post
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
+    @staticmethod
+    def _broken_client(**kw):
+        client = PIIShieldClient(enabled=True, **kw)
+        client._redact = lambda _text: (_ for _ in ()).throw(
+            RuntimeError("engine unavailable")
         )
+        return client
 
-        with patch(
-            "pii_shield.urllib3.connection.connection.create_connection",
-            side_effect=fake_create_connection,
-        ):
-            client.sanitize_diff("+email='alice@example.com'\n")
-
-        self.assertEqual(connected_addresses, [("93.184.216.34", 443)])
-        self.assertEqual(mock_getaddrinfo.call_count, 2)
-
-    @patch("pii_shield.requests.post")
-    def test_remote_mode_fail_closed_raises(self, mock_post):
-        mock_post.side_effect = requests.exceptions.Timeout("timeout")
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://example.invalid/shield",
-            fail_closed=True,
-        )
-
+    def test_engine_failure_defaults_fail_closed(self):
+        """fail_closed is not passed here on purpose: the DEFAULT must be
+        closed, or a config that never mentions the knob leaks on outage."""
+        client = self._broken_client()
         with self.assertRaises(PIIShieldError):
             client.sanitize_diff("+email='alice@example.com'\n")
 
-    @patch("pii_shield.requests.post")
-    def test_remote_redirects_are_rejected(self, mock_post):
-        mock_response = Mock()
-        mock_response.status_code = 302
-        mock_response.raise_for_status.return_value = None
-        mock_post.return_value = mock_response
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            fail_closed=True,
-        )
-
-        with self.assertRaises(PIIShieldError):
-            client.sanitize_diff("+email='alice@example.com'\n")
-        self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
-
-    @patch("pii_shield.requests.post")
-    def test_auto_mode_fail_open_passthrough_on_remote_error(self, mock_post):
-        mock_post.side_effect = requests.exceptions.ConnectionError("offline")
-        client = PIIShieldClient(
-            enabled=True,
-            mode="auto",
-            endpoint="https://example.invalid/shield",
-            fail_closed=False,
-        )
-
+    def test_engine_failure_fail_open_is_recorded_passthrough(self):
+        """Fail-open may pass raw text through, but the result must SAY so:
+        changed=False, provider=passthrough, and the error preserved in
+        metadata. Anything less lets a broken engine masquerade as a clean
+        run in the evidence bundle."""
+        client = self._broken_client(fail_closed=False)
         raw = "+email='alice@example.com'\n"
         result = client.sanitize_diff(raw)
 
-        self.assertEqual(result.mode, "auto")
         self.assertEqual(result.provider, "passthrough")
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, raw)
-        self.assertIn("remote_error", result.to_metadata()["details"])
+        # Key renamed from the HTTP-era "remote_error": nothing is remote,
+        # and evidence metadata must not imply a network hop that never ran.
+        self.assertIn("engine_error", result.to_metadata()["details"])
 
-    @patch("pii_shield.requests.post")
-    def test_auto_mode_remote_error_defaults_fail_closed(self, mock_post):
-        mock_post.side_effect = requests.exceptions.ConnectionError("offline")
-        client = PIIShieldClient(
-            enabled=True,
-            mode="auto",
-            endpoint="https://example.invalid/shield",
+
+class TestResultContract(unittest.TestCase):
+    """The evidence bundle records what the shield claims it did. These pin
+    the claims to what actually happened in-process."""
+
+    def test_redaction_result_reports_what_happened(self):
+        text = "+email='alice@example.com'\n"
+        client = PIIShieldClient(enabled=True)
+        result = client.sanitize_text(text)
+
+        self.assertTrue(result.changed)
+        self.assertGreaterEqual(result.redaction_count, 1)
+        self.assertEqual(result.provider, "pii-shield-wasi")
+        self.assertEqual(result.mode, "wasm-local")
+        # Hashes are how a verifier later proves what was sanitized. They
+        # must be of the actual input and actual output, not each other.
+        self.assertEqual(result.input_hash, client._sha256(text))
+        self.assertEqual(result.output_hash, client._sha256(result.sanitized_text))
+        self.assertNotEqual(result.input_hash, result.output_hash)
+
+    def test_metadata_reports_installed_engine_version(self):
+        """The sanitization summary reads details["engine_version"]; before
+        this was populated, every evidence summary said "unknown", which
+        trains reviewers to ignore the field. It must match the INSTALLED
+        package version -- read, not hardcoded -- so a dependency bump can
+        never leave the summary attesting to an engine that did not run."""
+        from importlib import metadata as _im
+        expected = _im.version("pii-shield-wasi")
+
+        client = PIIShieldClient(enabled=True)
+        result = client.sanitize_text("+email='alice@example.com'\n")
+
+        self.assertEqual(
+            result.to_metadata()["details"].get("engine_version"), expected
         )
 
-        with self.assertRaises(PIIShieldError):
-            client.sanitize_diff("+email='alice@example.com'\n")
+    def test_clean_text_reports_unchanged(self):
+        text = "+x = 1\n"
+        client = PIIShieldClient(enabled=True)
+        result = client.sanitize_text(text)
+
+        self.assertFalse(result.changed)
+        self.assertEqual(result.redaction_count, 0)
+        self.assertEqual(result.sanitized_text, text)
+        self.assertEqual(result.input_hash, result.output_hash)
 
 
 class TestPIIShieldJsonSanitization(unittest.TestCase):
-    @patch("pii_shield.requests.post")
-    def test_sanitize_json_document_returns_parsed_structure(self, mock_post):
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status.return_value = None
-        mock_response.json.return_value = {
-            "provider": "pii-shield-remote",
-            "sanitized_text": "{\"message\":\"contact [HIDDEN:e1]\"}",
-            "redaction_count": 1,
-            "redactions_by_type": {"email": 1},
-        }
-        mock_post.return_value = mock_response
+    """JSON documents (bundles, SARIF) must come back as structures, and a
+    sanitized blob that no longer parses must honour the fail policy.
+    Engine behavior is injected at _redact so the parse-error path is
+    reachable deterministically."""
 
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-        )
+    def test_sanitize_json_document_returns_parsed_structure(self):
+        """Real engine on purpose, and this test earned it: run against
+        pii-shield-wasi 2.1.1 with the old compact separators=(",",":")
+        serialization it goes RED, because the engine redacts nothing
+        inside '{"k":"v"}' compact JSON -- bundle and SARIF sanitization
+        was a silent no-op. The production fix is the ": " separator; this
+        pins it."""
+        client = PIIShieldClient(enabled=True)
         original = {"message": "contact alice@example.com"}
 
         sanitized, result = client.sanitize_json_document(original, purpose="bundle")
         self.assertTrue(result.changed)
-        self.assertEqual(sanitized["message"], "contact [HIDDEN:e1]")
+        self.assertIsInstance(sanitized, dict)
+        self.assertNotIn("alice@example.com", sanitized["message"])
 
-    @patch("pii_shield.requests.post")
-    def test_sanitize_json_document_fail_open_on_parse_error(self, mock_post):
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status.return_value = None
-        mock_response.json.return_value = {
-            "provider": "pii-shield-remote",
-            "sanitized_text": "not-json",
-            "redaction_count": 1,
-            "redactions_by_type": {"token": 1},
-        }
-        mock_post.return_value = mock_response
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            fail_closed=False,
-        )
+    def test_sanitize_json_document_fail_open_on_parse_error(self):
+        client = PIIShieldClient(enabled=True, fail_closed=False)
+        client._redact = lambda _text: "not-json"
         original = {"token": "secret"}
 
         sanitized, result = client.sanitize_json_document(original, purpose="bundle")
         self.assertEqual(sanitized, original)
         self.assertIn("parse_error", result.to_metadata()["details"])
 
-    @patch("pii_shield.requests.post")
-    def test_sanitize_json_document_fail_closed_on_parse_error(self, mock_post):
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status.return_value = None
-        mock_response.json.return_value = {
-            "provider": "pii-shield-remote",
-            "sanitized_text": "not-json",
-            "redaction_count": 1,
-            "redactions_by_type": {"token": 1},
-        }
-        mock_post.return_value = mock_response
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            fail_closed=True,
-        )
+    def test_sanitize_json_document_fail_closed_on_parse_error(self):
+        client = PIIShieldClient(enabled=True, fail_closed=True)
+        client._redact = lambda _text: "not-json"
 
         with self.assertRaises(PIIShieldError):
             client.sanitize_json_document({"token": "secret"}, purpose="bundle")
 
 
 class TestHashFieldPreservation(unittest.TestCase):
-    """C1 regression: hash/signature fields must survive PII-Shield sanitization."""
+    """C1 regression: hash/signature fields must survive sanitization.
 
-    @patch("pii_shield.requests.post")
-    def test_hash_fields_preserved_after_sanitization(self, mock_post):
-        """Hash fields should be extracted before remote call and reinjected after."""
-        bundle = {
-            "chain_hash": "sha256:aabbccdd" + "ee" * 28,
-            "content_hash": "sha256:11223344" + "55" * 28,
-            "root_hash": "sha256:deadbeef" + "00" * 28,
-            "signature_value": "base64:MEUCIQC" + "A" * 80,
-            "public_key_id": "key-2026-02-07",
-            "previous_hash": "sha256:cafebabe" + "ff" * 28,
-            "final_hash": "sha256:f1f2f3f4" + "ab" * 28,
-            "message": "contact alice@example.com for details",
-            "nested": {
-                "inner_hash": "sha256:nested00" + "11" * 28,
-                "description": "call 555-0100",
-            },
-        }
+    This matters MORE in-process than it did over HTTP: pii-shield-wasi
+    redacts bare 64-char hex on sight (measured), so without the
+    extract-before / reinject-after dance every chain_hash in an evidence
+    bundle would come back as [HIDDEN:...] and the bundle would no longer
+    verify. These use the REAL engine -- a mock that politely skips hashes
+    would hide exactly the failure this guards against.
+    """
 
-        # Simulate remote endpoint redacting high-entropy + PII strings
-        def fake_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            text = json["text"]
-            # Redact anything that looks like a hash or PII
-            import re
-            redacted = re.sub(r"sha256:[0-9a-f]{64}", "[REDACTED:hash]", text)
-            redacted = re.sub(r"base64:\S+", "[REDACTED:entropy]", redacted)
-            redacted = re.sub(r"key-\S+", "[REDACTED:key]", redacted)
-            redacted = redacted.replace("alice@example.com", "[REDACTED:email]")
-            redacted = redacted.replace("555-0100", "[REDACTED:phone]")
+    BUNDLE = {
+        "chain_hash": "sha256:aabbccdd" + "ee" * 28,
+        "content_hash": "sha256:11223344" + "55" * 28,
+        "root_hash": "sha256:deadbeef" + "00" * 28,
+        "signature_value": "base64:MEUCIQC" + "A" * 80,
+        "public_key_id": "key-2026-02-07",
+        "previous_hash": "sha256:cafebabe" + "ff" * 28,
+        "final_hash": "sha256:f1f2f3f4" + "ab" * 28,
+        "message": "contact alice@example.com for details",
+        "nested": {
+            "inner_hash": "sha256:nested00" + "11" * 28,
+            "description": "reach alice@example.com",
+        },
+    }
 
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": redacted,
-                "redaction_count": 2,
-                "redactions_by_type": {"email": 1, "phone": 1},
-            }
-            return resp
+    def test_hash_fields_preserved_after_sanitization(self):
+        client = PIIShieldClient(enabled=True)
+        sanitized, result = client.sanitize_json_document(self.BUNDLE, purpose="bundle")
 
-        mock_post.side_effect = fake_post
+        self.assertTrue(result.changed)
+        for key in ("chain_hash", "content_hash", "root_hash", "signature_value",
+                    "public_key_id", "previous_hash", "final_hash"):
+            self.assertEqual(sanitized[key], self.BUNDLE[key], key)
+        self.assertEqual(sanitized["nested"]["inner_hash"],
+                         self.BUNDLE["nested"]["inner_hash"])
 
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
+        # PII outside hash fields must still be redacted -- preservation
+        # must not become a hole the rest of the document leaks through.
+        self.assertNotIn("alice@example.com", sanitized["message"])
+        self.assertNotIn("alice@example.com", sanitized["nested"]["description"])
+
+    def test_hash_fields_never_reach_the_engine(self):
+        """Was 'not sent to remote'. The trust boundary moved from the
+        network to the engine call, but it is the same boundary: hash values
+        must be stripped BEFORE the text is handed over, not merely restored
+        afterwards, because whatever crosses that seam is what gets logged,
+        counted, and (in the old world) exfiltrated."""
+        seen = {}
+        client = PIIShieldClient(enabled=True)
+        real_redact = client._redact
+
+        def capture(text):
+            seen["text"] = text
+            return real_redact(text)
+
+        client._redact = capture
+        sanitized, _ = client.sanitize_json_document(
+            {"chain_hash": "sha256:aabbccdd" + "ee" * 28, "message": "hello world"},
+            purpose="bundle",
         )
 
-        sanitized, result = client.sanitize_json_document(bundle, purpose="bundle")
-
-        # Hash fields must be intact
-        self.assertEqual(sanitized["chain_hash"], bundle["chain_hash"])
-        self.assertEqual(sanitized["content_hash"], bundle["content_hash"])
-        self.assertEqual(sanitized["root_hash"], bundle["root_hash"])
-        self.assertEqual(sanitized["signature_value"], bundle["signature_value"])
-        self.assertEqual(sanitized["public_key_id"], bundle["public_key_id"])
-        self.assertEqual(sanitized["previous_hash"], bundle["previous_hash"])
-        self.assertEqual(sanitized["final_hash"], bundle["final_hash"])
-        self.assertEqual(sanitized["nested"]["inner_hash"], bundle["nested"]["inner_hash"])
-
-        # PII fields should still be redacted
-        self.assertNotEqual(sanitized["message"], bundle["message"])
-        self.assertIn("REDACTED", sanitized["message"])
-
-    @patch("pii_shield.requests.post")
-    def test_hash_fields_not_sent_to_remote(self, mock_post):
-        """The JSON sent to the remote endpoint must NOT contain hash field values."""
-        bundle = {
-            "chain_hash": "sha256:aabbccdd" + "ee" * 28,
-            "message": "hello world",
-        }
-
-        captured_payload = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured_payload["text"] = json["text"]
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],  # no changes
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-        )
-
-        sanitized, _ = client.sanitize_json_document(bundle, purpose="bundle")
-
-        # The hash value must NOT appear in the payload sent to remote
-        self.assertNotIn("aabbccdd", captured_payload["text"])
-        # But it must be present in the returned document
-        self.assertEqual(sanitized["chain_hash"], bundle["chain_hash"])
-
-
-class TestSafeRegexList(unittest.TestCase):
-    """PII-Shield v1.2.0 safe_regex_list whitelist support."""
-
-    @patch("pii_shield.requests.post")
-    def test_safe_regex_list_forwarded_in_payload(self, mock_post):
-        """safe_regex_list JSON is included in remote request payload."""
-        captured = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured["payload"] = json
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        regex_json = '[{"pattern": "^[a-f0-9]{40,64}$", "name": "SafeGitSHA"}]'
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            safe_regex_list=regex_json,
-        )
-        client.sanitize_text("sha256:aabbccdd" + "ee" * 28)
-
-        self.assertIn("safe_regex_list", captured["payload"])
-        self.assertEqual(len(captured["payload"]["safe_regex_list"]), 1)
-        self.assertEqual(captured["payload"]["safe_regex_list"][0]["name"], "SafeGitSHA")
-
-    @patch("pii_shield.requests.post")
-    def test_default_safe_regex_list_sent_when_none_configured(self, mock_post):
-        """Default safe_regex_list (hash field whitelist) is sent when not explicitly configured."""
-        captured = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured["payload"] = json
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-        )
-        client.sanitize_text("hello world")
-
-        self.assertIn("safe_regex_list", captured["payload"])
-        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
-        self.assertIn("HashFieldSHA256", names)
-
-    @patch("pii_shield.requests.post")
-    def test_safe_regex_list_invalid_json_ignored(self, mock_post):
-        """Invalid JSON in safe_regex_list is silently ignored."""
-        captured = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured["payload"] = json
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            safe_regex_list="not valid json {{",
-        )
-        client.sanitize_text("hello world")
-
-        self.assertNotIn("safe_regex_list", captured["payload"])
-
-    def test_safe_regex_list_env_var_set(self):
-        """PII_SAFE_REGEX_LIST env var should be readable after client init."""
-        import os
-        regex_json = '[{"pattern": "_hash$", "name": "HashFieldSuffix"}]'
-        os.environ["PII_SAFE_REGEX_LIST"] = regex_json
-        try:
-            self.assertEqual(os.environ["PII_SAFE_REGEX_LIST"], regex_json)
-        finally:
-            del os.environ["PII_SAFE_REGEX_LIST"]
-
-
-class TestDefaultSafeRegexList(unittest.TestCase):
-    """Default safe_regex_list should whitelist SHA-256 hash fields."""
-
-    @patch("pii_shield.requests.post")
-    def test_default_safe_regex_sent_when_none_provided(self, mock_post):
-        """When no safe_regex_list is provided, the default whitelist is sent."""
-        captured = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured["payload"] = json
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-        )
-        client.sanitize_text("content_hash = 'aabb' * 32")
-
-        self.assertIn("safe_regex_list", captured["payload"])
-        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
-        self.assertIn("HashFieldSHA256", names)
-        self.assertIn("BareHexSHA256", names)
-
-    @patch("pii_shield.requests.post")
-    def test_custom_safe_regex_overrides_default(self, mock_post):
-        """When user provides safe_regex_list, it replaces the default."""
-        captured = {}
-
-        def capture_post(url, json=None, headers=None, timeout=None, allow_redirects=None):
-            captured["payload"] = json
-            resp = Mock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            resp.json.return_value = {
-                "provider": "pii-shield-remote",
-                "sanitized_text": json["text"],
-                "redaction_count": 0,
-                "redactions_by_type": {},
-            }
-            return resp
-
-        mock_post.side_effect = capture_post
-
-        custom = '[{"pattern": "^custom$", "name": "Custom"}]'
-        client = PIIShieldClient(
-            enabled=True,
-            mode="remote",
-            endpoint="https://shield.example/api/sanitize",
-            safe_regex_list=custom,
-        )
-        client.sanitize_text("hello world")
-
-        self.assertIn("safe_regex_list", captured["payload"])
-        names = [r["name"] for r in captured["payload"]["safe_regex_list"]]
-        self.assertEqual(names, ["Custom"])
-        self.assertNotIn("HashFieldSHA256", names)
+        self.assertNotIn("aabbccdd", seen["text"])
+        self.assertEqual(sanitized["chain_hash"], "sha256:aabbccdd" + "ee" * 28)
 
 
 if __name__ == "__main__":

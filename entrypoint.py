@@ -138,8 +138,18 @@ def _init_sanitization_summary(
     details = pii_result.to_metadata().get("details", {})
     return {
         "engine_name": "pii-shield",
-        "engine_version": str(details.get("engine_version") or details.get("schema_version") or "unknown"),
-        "method": "provider_native" if pii_result.mode == "remote" else "deterministic_hmac",
+        # Set by the WASM client from installed package metadata; "unknown"
+        # only when that metadata is unreadable or the engine never ran
+        # (passthrough modes). The old schema_version fallback was an
+        # HTTP-response field nothing sets any more, so it always fell
+        # through and every summary said "unknown" -- a field that is
+        # always "unknown" trains people to ignore the summary.
+        "engine_version": str(details.get("engine_version") or "unknown"),
+        # Constant on purpose: the "provider_native" branch keyed on
+        # mode == "remote", which no result can report since the HTTP
+        # client was deleted. Redaction is always the engine's
+        # deterministic HMAC tokenization now.
+        "method": "deterministic_hmac",
         "token_format": "[HIDDEN:<id>]",
         "salt_fingerprint": salt_fingerprint,
         "redaction_count": 0,
@@ -511,13 +521,12 @@ def main():
     pii_shield_sanitize_comments = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_COMMENTS", "true"))
     pii_shield_sanitize_bundle = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_BUNDLE", "true"))
     pii_shield_sanitize_sarif = parse_bool(get_env("INPUT_PII_SHIELD_SANITIZE_SARIF", "true"))
-    pii_safe_regex_list = get_env(
-        "INPUT_PII_SAFE_REGEX_LIST",
-        '[{"pattern": "^[a-f0-9]{40,64}$", "name": "SafeGitSHA"}, {"pattern": "_hash$", "name": "HashFieldSuffix"}]',
-    )
-    # Forward PII_SAFE_REGEX_LIST to the PII-Shield sidecar via env var
-    # (v1.2.0+ reads this to bypass entropy checks for whitelisted patterns)
-    os.environ["PII_SAFE_REGEX_LIST"] = pii_safe_regex_list
+    # Read but no longer forwarded anywhere. The old code exported this as
+    # an environment variable for the engine; in pii-shield-wasi 2.1.1 that
+    # variable is ignored when it parses and terminates the WASM runtime
+    # when it does not (measured) -- so exporting it turned a config typo
+    # into a total redaction outage. The client warns that it is ignored.
+    pii_safe_regex_list = get_env("INPUT_PII_SAFE_REGEX_LIST")
     pii_client = PIIShieldClient(
         enabled=pii_shield_enabled,
         mode=pii_shield_mode,

@@ -24,3 +24,7 @@ anthropic>=0.18.0
 wasmtime>=16.0.0
 
 toml==0.10.2
+
+# In-process PII redaction engine. Replaces the deleted HTTP client
+# and the vendored pii-shield.wasm binary; see src/pii_shield.py.
+pii-shield-wasi==2.1.1

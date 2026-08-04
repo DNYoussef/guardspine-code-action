@@ -25,8 +25,11 @@ RUN mkdir -p /staging/usr/bin \
 # Copy libpcre2 (git runtime dependency)
 RUN cp /usr/lib/*-linux-gnu/libpcre2-8.so* /staging/usr/lib/ 2>/dev/null; true
 
+# No lib/pii-shield.wasm any more: the engine ships inside the
+# pii-shield-wasi wheel installed from requirements.txt, so it is already
+# in the site-packages copied above. Re-adding a COPY here would fail the
+# build (the file is deleted) and re-vendor what pip now delivers.
 COPY src/ /staging/action/src/
-COPY lib/pii-shield.wasm /staging/action/lib/pii-shield.wasm
 COPY entrypoint.py /staging/action/
 
 # --- Single layer on top of base ---
