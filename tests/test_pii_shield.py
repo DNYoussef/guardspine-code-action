@@ -55,17 +55,27 @@ class TestPIIShieldModes(unittest.TestCase):
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, text)
 
-    def test_local_mode_is_explicit_passthrough(self):
+    def test_local_mode_with_shield_enabled_raises(self):
+        """mode='local' used to return the ORIGINAL text with the shield
+        enabled -- a second non-WASM path that shipped raw PII while the
+        workflow believed PII-Shield was on. Enabled + local must now fail
+        loudly, never emit input as if it were sanitized output."""
         diff = "+email='alice@example.com'\n"
         with self.assertWarns(DeprecationWarning):
             client = PIIShieldClient(enabled=True, mode="local")
-        result = client.sanitize_diff(diff)
 
-        self.assertEqual(result.mode, "local")
-        self.assertEqual(result.provider, "passthrough")
-        self.assertFalse(result.changed)
-        self.assertEqual(result.sanitized_text, diff)
-        self.assertIn("local mode is passthrough", result.to_metadata()["details"].get("warning", ""))
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff(diff)
+
+    def test_local_mode_raises_even_with_fail_closed_false(self):
+        """fail_closed=False is an opt-out for ENGINE OUTAGES, not a license
+        to run a mode that never redacts. The rejection is about the
+        configuration, so the fail policy must not soften it."""
+        with self.assertWarns(DeprecationWarning):
+            client = PIIShieldClient(enabled=True, mode="local", fail_closed=False)
+
+        with self.assertRaises(PIIShieldError):
+            client.sanitize_diff("+email='alice@example.com'\n")
 
     def test_legacy_remote_mode_sanitizes_in_process(self):
         """mode='remote' is a legacy input that workflows in the wild still
@@ -112,7 +122,9 @@ class TestEngineFailurePolicy(unittest.TestCase):
         self.assertEqual(result.provider, "passthrough")
         self.assertFalse(result.changed)
         self.assertEqual(result.sanitized_text, raw)
-        self.assertIn("remote_error", result.to_metadata()["details"])
+        # Key renamed from the HTTP-era "remote_error": nothing is remote,
+        # and evidence metadata must not imply a network hop that never ran.
+        self.assertIn("engine_error", result.to_metadata()["details"])
 
 
 class TestResultContract(unittest.TestCase):
@@ -133,6 +145,22 @@ class TestResultContract(unittest.TestCase):
         self.assertEqual(result.input_hash, client._sha256(text))
         self.assertEqual(result.output_hash, client._sha256(result.sanitized_text))
         self.assertNotEqual(result.input_hash, result.output_hash)
+
+    def test_metadata_reports_installed_engine_version(self):
+        """The sanitization summary reads details["engine_version"]; before
+        this was populated, every evidence summary said "unknown", which
+        trains reviewers to ignore the field. It must match the INSTALLED
+        package version -- read, not hardcoded -- so a dependency bump can
+        never leave the summary attesting to an engine that did not run."""
+        from importlib import metadata as _im
+        expected = _im.version("pii-shield-wasi")
+
+        client = PIIShieldClient(enabled=True)
+        result = client.sanitize_text("+email='alice@example.com'\n")
+
+        self.assertEqual(
+            result.to_metadata()["details"].get("engine_version"), expected
+        )
 
     def test_clean_text_reports_unchanged(self):
         text = "+x = 1\n"

@@ -93,7 +93,7 @@ inputs:
     required: false
     default: 'false'
   pii_shield_mode:
-    description: 'PII-Shield mode. Redaction always runs in-process via WASM; auto and remote both sanitize, local is a deprecated passthrough (no redaction)'
+    description: 'PII-Shield mode. Redaction always runs in-process via WASM; auto and remote both sanitize. local is REJECTED when the shield is enabled (it performs no redaction, so the run fails loudly instead of passing raw text through); use pii_shield_enabled: false to opt out'
     required: false
     default: 'auto'
   pii_shield_endpoint:

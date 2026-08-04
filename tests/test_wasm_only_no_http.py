@@ -239,3 +239,143 @@ def test_disabled_shield_is_still_a_passthrough():
     shield = PIIShield(enabled=False)
     text = "Contact alice@example.com today"
     assert shield.sanitize_text(text).sanitized_text == text
+
+
+# --------------------------------- 4. the promise holds across the whole path
+#
+# The tests above read ONLY src/pii_shield.py. That scope was vacuous: an
+# HTTP call added at the entrypoint.py CALL SITE -- posting the diff
+# somewhere before or after sanitize_diff -- would leave every assertion
+# green. The exact shape of miss already happened once in this migration
+# (PII_SAFE_REGEX_LIST: the gate checked one file, the other file exported
+# the variable). So the gate now covers every file the PII path crosses.
+#
+# Scoped to the PII path, NOT to the string "requests": entrypoint.py
+# legitimately uses requests to fetch the PR diff from the GitHub API --
+# that is the action's core job -- and a repo-wide ban would either fail
+# immediately or get deleted. The rule is per-FUNCTION: any function that
+# touches PII-Shield symbols must not touch an HTTP client. And it checks
+# the AST, not raw text, for the same reason as _code_only: these files'
+# comments name the deleted symbols to explain the removal, and a grep gate
+# fails on the explanation or gets "fixed" by deleting it.
+
+ROOT = Path(__file__).resolve().parents[1]
+ENTRYPOINT = ROOT / "entrypoint.py"
+
+_HTTP_CLIENT_ROOTS = {"requests", "urllib3", "httpx", "aiohttp", "urllib"}
+
+_PII_MARKERS = {
+    "PIIShieldClient", "PIIShieldError", "PIIShieldResult",
+    "pii_client", "pii_result", "pii_shield_result",
+    "sanitize_text", "sanitize_diff", "sanitize_json_document",
+    "_sanitize_via_wasm", "_redact",
+}
+
+
+def _functions_touching_pii(path: Path):
+    """Yield (name, node) for every function in *path* that references a
+    PII-Shield symbol, by Name or Attribute -- i.e. the PII path proper."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            used = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+            used |= {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
+            if used & _PII_MARKERS:
+                yield node.name, node
+
+
+def _http_uses_in(node: ast.AST) -> set[str]:
+    """HTTP-client roots a function actually touches: imports of them, or
+    names resolving to them (covers `requests.post(...)` via its Name root)."""
+    hits: set[str] = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Import):
+            hits.update(a.name.split(".")[0] for a in sub.names
+                        if a.name.split(".")[0] in _HTTP_CLIENT_ROOTS)
+        elif isinstance(sub, ast.ImportFrom) and sub.module:
+            root = sub.module.split(".")[0]
+            if root in _HTTP_CLIENT_ROOTS:
+                hits.add(root)
+        elif isinstance(sub, ast.Name) and sub.id in _HTTP_CLIENT_ROOTS:
+            hits.add(sub.id)
+    return hits
+
+
+def _pii_path_files():
+    yield ENTRYPOINT
+    yield from sorted((ROOT / "src").glob("*.py"))
+
+
+def test_gate_scope_is_not_vacuous():
+    """The gate below only bites if it actually finds the PII path. If a
+    rename drifts every marker, the per-function checks pass on an empty
+    set -- the exact scope-vacuity this section exists to fix -- so pin
+    that entrypoint.py still contains PII-touching functions."""
+    assert any(True for _ in _functions_touching_pii(ENTRYPOINT)), (
+        "no function in entrypoint.py references a PII-Shield symbol; "
+        "either the integration was removed or _PII_MARKERS drifted -- "
+        "update the markers, do not delete this gate"
+    )
+
+
+def test_no_http_client_reaches_pii_sanitization_anywhere():
+    """Per-function, across entrypoint.py and all of src/: a function on
+    the PII path must not import or use an HTTP client. fetch_pr_diff's
+    GitHub API use stays legal because it touches no PII symbol -- the raw
+    diff it returns has not entered the shield yet."""
+    offenders = []
+    for path in _pii_path_files():
+        for name, node in _functions_touching_pii(path):
+            hits = _http_uses_in(node)
+            if hits:
+                offenders.append(f"{path.name}:{name} uses {sorted(hits)}")
+    assert not offenders, (
+        "HTTP client on the PII path -- the WASM-only promise is broken "
+        "at the call site, not the module: " + "; ".join(offenders)
+    )
+
+
+def test_action_yml_does_not_redocument_the_endpoint_as_functional():
+    """The deprecated inputs stay accepted (never break the user) but must
+    stay DOCUMENTED as ignored. Re-describing pii_shield_endpoint as a real
+    knob is how a future HTTP client gets its configuration surface back."""
+    text = (ROOT / "action.yml").read_text(encoding="utf-8")
+    match = re.search(
+        r"pii_shield_endpoint:\s*\n\s*description:\s*'([^']*)'", text
+    )
+    assert match, "pii_shield_endpoint input vanished from action.yml -- "\
+                  "removing an accepted input breaks existing workflows"
+    desc = match.group(1).lower()
+    assert "deprecated" in desc and "ignored" in desc, (
+        "pii_shield_endpoint is documented as functional again: {!r}".format(
+            match.group(1))
+    )
+
+
+def test_dockerfile_does_not_revendor_the_engine_or_fetch_one():
+    """The engine arrives inside the pip wheel. A COPY of a .wasm blob or a
+    curl/wget of anything pii-shaped is the vendored path coming back."""
+    code_lines = [
+        line for line in
+        (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    for line in code_lines:
+        assert "pii-shield.wasm" not in line, (
+            "Dockerfile re-vendors the engine binary: {!r}".format(line))
+        assert not (re.search(r"\b(curl|wget)\b", line) and "pii" in line.lower()), (
+            "Dockerfile downloads a pii-shield artifact: {!r}".format(line))
+
+
+def test_requirements_carry_no_pii_http_client_package():
+    """The only pii-* dependency allowed is the WASM package itself. A
+    second pii client dependency (e.g. an HTTP SDK) is the network path
+    returning through pip instead of through code."""
+    for req in sorted(ROOT.glob("requirements*.txt")) + sorted(ROOT.glob("requirements*.in")):
+        for line in req.read_text(encoding="utf-8").splitlines():
+            spec = line.split("#")[0].strip().lower()
+            if spec.startswith("pii"):
+                assert spec.startswith("pii-shield-wasi"), (
+                    "{}: unexpected pii dependency {!r} -- only "
+                    "pii-shield-wasi is the sanctioned engine".format(req.name, line)
+                )

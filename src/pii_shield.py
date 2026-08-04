@@ -47,6 +47,22 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _engine_version() -> str | None:
+    """Installed pii-shield-wasi version, or None when unreadable.
+
+    Read from package metadata, never hardcoded: a pinned string here would
+    keep reporting the old version after a dependency bump, and the evidence
+    summary would then attest to an engine that did not run. None (not a
+    guess) when metadata is unavailable, so the summary says "unknown"
+    instead of something plausible and wrong.
+    """
+    try:
+        from importlib import metadata
+        return metadata.version("pii-shield-wasi")
+    except Exception:
+        return None
+
+
 def _load_wasm_engine():
     """Import the installed pii-shield-wasi package, not ourselves.
 
@@ -272,8 +288,10 @@ class PIIShieldClient:
         if self.mode == "local":
             import warnings
             warnings.warn(
-                "PII-Shield mode='local' is deprecated (identical to disabled). "
-                "Use enabled=False or mode='auto' instead.",
+                "PII-Shield mode='local' is deprecated. With the shield "
+                "enabled it is REJECTED at sanitize time (it would pass raw "
+                "text through unredacted); with enabled=False it does "
+                "nothing. Use mode='auto', or set enabled=False to opt out.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -337,9 +355,9 @@ class PIIShieldClient:
                     purpose=purpose,
                 )
             except Exception as exc:
-                remote_error = str(exc)
+                engine_error = str(exc)
                 if self.mode == "remote" or self.fail_closed:
-                    raise PIIShieldError(f"Remote PII-Shield failed: {exc}") from exc
+                    raise PIIShieldError(f"PII-Shield engine failed: {exc}") from exc
                 return PIIShieldResult(
                     sanitized_text=text,
                     changed=False,
@@ -350,36 +368,28 @@ class PIIShieldClient:
                     input_hash=input_hash,
                     output_hash=input_hash,
                     signals=[],
-                    metadata={"warning": "remote PII-Shield failed; running fail-open passthrough", "remote_error": remote_error},
+                    # "remote_error" was the HTTP-era key name; renamed so an
+                    # auditor reading a bundle is not sent hunting for a
+                    # network hop that does not exist.
+                    metadata={"warning": "PII-Shield engine failed; running fail-open passthrough", "engine_error": engine_error},
                 )
 
-        if self.mode == "local":
-            # Kept only for compatibility; no built-in detector is implemented.
-            print("::warning::PII-Shield local mode provides no PII detection. Configure a remote endpoint for actual protection.", file=sys.stderr)
-            return PIIShieldResult(
-                sanitized_text=text,
-                changed=False,
-                redaction_count=0,
-                redactions_by_type={},
-                mode="local",
-                provider="passthrough",
-                input_hash=input_hash,
-                output_hash=input_hash,
-                signals=[],
-                metadata={"warning": "local mode is passthrough; configure remote endpoint for PII-Shield detection"},
-            )
-
-        return PIIShieldResult(
-            sanitized_text=text,
-            changed=False,
-            redaction_count=0,
-            redactions_by_type={},
-            mode=self.mode,
-            provider="passthrough",
-            input_hash=input_hash,
-            output_hash=input_hash,
-            signals=[],
-            metadata={"warning": "PII-Shield auto mode is passthrough without endpoint"},
+        # mode == "local" -- the only value left after auto/remote above,
+        # guaranteed by the _VALID_MODES check in __init__. This used to be
+        # a warned passthrough that RETURNED THE RAW TEXT with the shield
+        # enabled -- a second non-WASM path, and one that shipped every byte
+        # unredacted while the workflow said PII-Shield was on. Worse after
+        # the migration than before it: the old warning's remedy ("configure
+        # a remote endpoint") now does nothing, so a local-mode user had no
+        # route to protection at all. Refuse loudly instead. enabled=False
+        # (handled at the top of this function) stays a clean passthrough:
+        # "off" is a choice; "on but silently doing nothing" is a leak.
+        raise PIIShieldError(
+            "PII-Shield mode='local' is rejected while the shield is "
+            "enabled: it performs no redaction, so raw text would pass "
+            "through as if sanitized. Set pii_shield_mode: auto for "
+            "in-process WASM redaction (no endpoint needed), or opt out "
+            "explicitly with pii_shield_enabled: false."
         )
 
     def sanitize_diff(self, diff_content: str) -> PIIShieldResult:
@@ -400,8 +410,8 @@ class PIIShieldClient:
         Sanitize a JSON-like structure while preserving schema shape when possible.
 
         Hash and signature fields are extracted before sanitization and
-        re-injected afterwards so that high-entropy cryptographic values
-        are never sent to the remote PII-Shield endpoint.
+        re-injected afterwards: the in-process engine redacts bare SHA-256
+        hex on sight, and a redacted chain hash is unverifiable evidence.
         """
         import copy as _copy
 
@@ -533,6 +543,9 @@ class PIIShieldClient:
             metadata={
                 "input_format": input_format,
                 "engine": "wasm",
+                # Omitted (not guessed) when package metadata is unreadable;
+                # the sanitization summary then reports "unknown".
+                **({"engine_version": v} if (v := _engine_version()) else {}),
                 "transport": "in-process",
             },
         )
@@ -586,141 +599,11 @@ class PIIShieldClient:
         # the exact regression the caller's test suite pins.
         return [_signal(None, max(1, sanitized.count("[HIDDEN")))]
 
-    @staticmethod
-    def _extract_redactions_by_type(body: dict[str, Any]) -> dict[str, int]:
-        raw = body.get("redactions_by_type")
-        if isinstance(raw, dict):
-            clean: dict[str, int] = {}
-            for key, value in raw.items():
-                try:
-                    clean[str(key)] = int(value)
-                except (TypeError, ValueError):
-                    continue
-            return clean
-
-        redactions = body.get("redactions")
-        if isinstance(redactions, list):
-            counts: dict[str, int] = {}
-            for item in redactions:
-                label = "unknown"
-                if isinstance(item, dict):
-                    label = str(
-                        item.get("type")
-                        or item.get("category")
-                        or item.get("label")
-                        or "unknown"
-                    )
-                counts[label] = counts.get(label, 0) + 1
-            return counts
-
-        return {}
-
-    @staticmethod
-    def _map_label_to_zone(label: str) -> str | None:
-        normalized = (label or "").strip().lower().replace("-", "_").replace(" ", "_")
-        if not normalized:
-            return None
-        parts = set(normalized.split("_"))
-        if any(k in parts for k in ("email", "phone", "ssn", "pii", "phi", "personal")):
-            return "pii"
-        if any(k in parts for k in ("card", "pan", "payment", "billing")):
-            return "payment"
-        if any(k in parts for k in ("secret", "token", "credential", "password", "key", "entropy")):
-            return "entropy_secret"
-        return None
-
-    @staticmethod
-    def _as_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    def _extract_signals(
-        self,
-        body: dict[str, Any],
-        redactions_by_type: dict[str, int],
-    ) -> list[dict[str, Any]]:
-        raw_signals = (
-            body.get("detections")
-            or body.get("findings")
-            or body.get("matches")
-            or body.get("redactions")
-            or []
-        )
-
-        signals: list[dict[str, Any]] = []
-        if isinstance(raw_signals, list):
-            for item in raw_signals:
-                if not isinstance(item, dict):
-                    continue
-                label = str(
-                    item.get("type")
-                    or item.get("category")
-                    or item.get("label")
-                    or item.get("name")
-                    or "unknown"
-                )
-                zone = self._map_label_to_zone(label)
-                if not zone:
-                    continue
-                line = (
-                    self._as_int(item.get("line"))
-                    or self._as_int(item.get("line_number"))
-                    or self._as_int(item.get("start_line"))
-                )
-                signal = {
-                    "zone": zone,
-                    "file": str(item.get("file") or item.get("path") or "__pii_shield__"),
-                    "line": line,
-                    "detector": "pii_shield",
-                    "category": label,
-                    "content_preview": str(
-                        item.get("text")
-                        or item.get("value")
-                        or item.get("token")
-                        or ""
-                    )[:120],
-                }
-                confidence = item.get("confidence")
-                try:
-                    if confidence is not None:
-                        signal["confidence"] = float(confidence)
-                except (TypeError, ValueError):
-                    pass
-                signals.append(signal)
-
-        if not signals:
-            for label, count in redactions_by_type.items():
-                zone = self._map_label_to_zone(label)
-                if not zone:
-                    continue
-                signals.append(
-                    {
-                        "zone": zone,
-                        "file": "__pii_shield__",
-                        "line": None,
-                        "detector": "pii_shield",
-                        "category": label,
-                        "count": int(count),
-                        "content_preview": "",
-                    }
-                )
-
-        deduped: list[dict[str, Any]] = []
-        seen: set[tuple[Any, ...]] = set()
-        for signal in signals:
-            key = (
-                signal.get("zone"),
-                signal.get("file"),
-                signal.get("line"),
-                signal.get("category"),
-                signal.get("content_preview"),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(signal)
-        return deduped
+    # The HTTP-era response parsers (_extract_redactions_by_type,
+    # _extract_signals, _map_label_to_zone, _as_int) were deleted with the
+    # transport: they parsed a response BODY that no longer exists. The
+    # label-to-zone mapping they carried (email->pii, card->payment,
+    # secret->entropy_secret) is not wired into the line-diff reconstruction
+    # above because the engine's redact(str) -> str reports no labels to
+    # map -- there is no input for it. If upstream ever returns structured
+    # findings, that mapping lives in git history at the pre-WASM revision.

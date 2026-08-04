@@ -721,7 +721,7 @@ required, and nothing being sanitized leaves the runner.
 | Input | Default | Description |
 |-------|---------|-------------|
 | `pii_shield_enabled` | `false` | Enable PII-Shield sanitization |
-| `pii_shield_mode` | `auto` | `auto` and `remote` both sanitize in-process; `local` is a deprecated passthrough (no redaction) |
+| `pii_shield_mode` | `auto` | `auto` and `remote` both sanitize in-process; `local` is rejected when the shield is enabled (it performs no redaction, so the run fails instead of passing raw text through) |
 | `pii_shield_endpoint` | `""` | Deprecated, ignored. Redaction is in-process; a value only produces a warning |
 | `pii_shield_api_key` | `""` | Deprecated, ignored. There is no endpoint to authenticate to |
 | `pii_shield_timeout` | `5` | Deprecated, ignored. There is no HTTP request to time out |

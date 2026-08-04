@@ -138,8 +138,18 @@ def _init_sanitization_summary(
     details = pii_result.to_metadata().get("details", {})
     return {
         "engine_name": "pii-shield",
-        "engine_version": str(details.get("engine_version") or details.get("schema_version") or "unknown"),
-        "method": "provider_native" if pii_result.mode == "remote" else "deterministic_hmac",
+        # Set by the WASM client from installed package metadata; "unknown"
+        # only when that metadata is unreadable or the engine never ran
+        # (passthrough modes). The old schema_version fallback was an
+        # HTTP-response field nothing sets any more, so it always fell
+        # through and every summary said "unknown" -- a field that is
+        # always "unknown" trains people to ignore the summary.
+        "engine_version": str(details.get("engine_version") or "unknown"),
+        # Constant on purpose: the "provider_native" branch keyed on
+        # mode == "remote", which no result can report since the HTTP
+        # client was deleted. Redaction is always the engine's
+        # deterministic HMAC tokenization now.
+        "method": "deterministic_hmac",
         "token_format": "[HIDDEN:<id>]",
         "salt_fingerprint": salt_fingerprint,
         "redaction_count": 0,
