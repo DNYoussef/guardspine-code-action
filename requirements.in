@@ -20,11 +20,25 @@ anthropic>=0.18.0
 # Output formatting
 # rich>=13.0  # unused
 
-# WASM Runtime
+# Supply-chain floor on the runtime that executes the PII engine. We do
+# NOT import wasmtime ourselves (the hand-rolled adapter is deleted;
+# tests/test_wasm_only_no_http.py asserts src/ never touches it) --
+# pii-shield-wasi drives it. But its own metadata only requires
+# wasmtime>=12.0.0, and we are not willing to let the resolver hand the
+# PII engine a runtime that old. This is a deliberate floor, not a
+# leftover from the deleted adapter. Drop it only if pii-shield-wasi
+# raises its own floor to at least this.
 wasmtime>=16.0.0
 
 toml==0.10.2
 
 # In-process PII redaction engine. Replaces the deleted HTTP client
 # and the vendored pii-shield.wasm binary; see src/pii_shield.py.
+#
+# Pinned EXACTLY at 2.1.1: that version was committed in writing to the
+# upstream maintainer, and it carries fixes for redaction cascading past
+# a hit and for mangling unbalanced quotes, both of which would corrupt
+# a diff we present as evidence. A floating pin would mean that
+# commitment holds only until the next resolve. Do not loosen without a
+# new agreement upstream.
 pii-shield-wasi==2.1.1
