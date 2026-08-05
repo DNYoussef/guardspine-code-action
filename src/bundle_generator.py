@@ -29,6 +29,11 @@ try:
 except ImportError:  # pragma: no cover - fallback for direct module imports in tests
     from canonical_json import canonical_json_dumps
 
+try:
+    from .analyzer import review_failed
+except ImportError:  # pragma: no cover - fallback for direct module imports in tests
+    from analyzer import review_failed
+
 
 def build_governance_record(classifier, rubric_input: str = "default") -> dict:
     return {
@@ -167,7 +172,13 @@ class BundleGenerator:
                 "response_hash": r.get("response_hash", ""),
             }
             for r in (mmr.get("reviews") or [])
-            if not r.get("error")
+            # review_failed, not `not r.get("error")`. This is the evidence
+            # bundle: a parse- or schema-rejected review has no "error" key, so
+            # it was sealed here as completed review provenance while
+            # models_failed counted it as failed. The bundle's own numbers
+            # contradicted each other, in the artifact whose entire claim is
+            # that the record says what happened.
+            if not review_failed(r)
         ]
 
         # Event 2: Analysis Completed

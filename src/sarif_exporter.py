@@ -14,6 +14,30 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+AVAILABILITY_RULE_ID = "ai-availability"
+
+
+def is_policy_finding(finding: dict) -> bool:
+    """Is this a finding ABOUT THE CODE, rather than about the review itself?
+
+    SARIF is code scanning: every result is an alert ABOUT THE SOURCE, and
+    anything not zone- or rubric-scoped is classified "security" with a source
+    location. An availability record has no file, so it would ship as a
+    security alert against uri "" -- a provider outage rendered as a
+    vulnerability in the customer's repository.
+
+    Exported, because the CALLER needs the same predicate. Filtering only here
+    meant an availability record still made the caller's `findings` list
+    truthy, so a total reviewer outage on an otherwise clean diff generated a
+    SARIF document, this filter removed its only result, and the upload became
+    zero results with executionSuccessful true -- which is precisely the
+    document that tells code scanning to CLOSE existing alerts. The filter
+    written to keep an outage out of code scanning was, by itself, worse than
+    the problem: it turned an outage into an all-clear.
+    """
+    return str(finding.get("rule_id") or "") != AVAILABILITY_RULE_ID
+
+
 class SARIFExporter:
     """
     Exports GuardSpine findings in SARIF 2.1.0 format.
@@ -75,6 +99,13 @@ class SARIFExporter:
         self.rules = {}
         results = []
 
+        # Defence in depth: the caller gates on this same predicate so an
+        # availability-only set never reaches here at all (see
+        # is_policy_finding). Kept anyway, because a future caller that forgets
+        # should still not ship an outage as a source alert.
+        incomplete = any(not is_policy_finding(f) for f in findings)
+        findings = [f for f in findings if is_policy_finding(f)]
+
         for finding in findings:
             rule_id = finding.get("rule_id", finding.get("id", "unknown"))
 
@@ -105,7 +136,18 @@ class SARIFExporter:
                     "results": results,
                     "invocations": [
                         {
-                            "executionSuccessful": True,
+                            # NOT unconditionally true. An availability record
+                            # in the input means some reviewer did not return a
+                            # verdict, so this run did not see everything it was
+                            # meant to. Reporting it successful is what lets
+                            # code scanning treat the absence of alerts as
+                            # proof of their resolution and close them.
+                            #
+                            # This does not depend on the caller gating
+                            # correctly: even if an availability-only document
+                            # is uploaded, executionSuccessful false stops it
+                            # being read as an all-clear.
+                            "executionSuccessful": not incomplete,
                             "endTimeUtc": datetime.now(timezone.utc).isoformat(),
                         }
                     ],
