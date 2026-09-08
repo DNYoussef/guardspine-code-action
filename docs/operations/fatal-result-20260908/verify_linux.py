@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 
 # Git's canonical LF bytes, not the Windows working copy's CRLF bytes.
 EXPECTED = {
-    "entrypoint.py": "3949039bddfad1290de93259a9e5e95eb60bd090987ec078ef2ee0c6aef684ab",
+    "entrypoint.py": "173c5cdb82ac5a9cf8261e839dec8385148bf9d50b96b0718a4fd602ba5c2768",
     "tests/test_entrypoint_failure_reporting.py": "d27115d96573c80c9a8a28a39485103f5c3ec4d7d305e8ae71dec9efd8902955",
     "tests/test_entrypoint_summary_integrity.py": "8c52765acc8ddbd917c8da4953fdeb42d34932ee62ef9de28debe57cafac42fe",
     "tests/test_antiforgery.py": "5514cd590a543ab228a77131344d4562814c0acbe39bb459adfb741b22ced239",

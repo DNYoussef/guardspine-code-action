@@ -19,6 +19,8 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain)"
+          python3 -B docs/operations/reporting-20260908/test_blob_pins.py
+          python3 -B docs/operations/reporting-20260908/check_blob_pins.py HEAD
           docker build -f docs/operations/fatal-result-20260908/Dockerfile.verify -t fatal-verifier .
       - name: Independently execute candidate without network or credentials
         run: |
