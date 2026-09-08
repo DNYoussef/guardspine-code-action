@@ -482,11 +482,9 @@ class PIIShieldClient:
         wasm_shield_cls, wasm_config_cls = _load_wasm_engine()
         shield = wasm_shield_cls(wasm_config_cls(
             salt=self.salt_fingerprint or None,
-            # The engine's own policy knob. Ours is enforced by the caller
-            # (sanitize_text re-raises), but passing it through means the
-            # engine does not quietly fail open underneath a fail-closed
-            # configuration.
-            fail_policy="closed" if self.fail_closed else "open",
+            # Keep engine failures observable. sanitize_text alone applies
+            # the caller's policy, including explicitly warned fail-open.
+            fail_policy="closed",
         ))
         return shield.redact(text)
 
@@ -508,6 +506,10 @@ class PIIShieldClient:
         """
         try:
             sanitized = self._redact(text)
+            # The package uses an in-band sentinel: an identical whole input
+            # is conservatively rejected too; embedded literals remain valid.
+            if sanitized == "[PII_SHIELD_DROP: FATAL_ERROR]":
+                raise RuntimeError("PII-Shield engine returned a fatal error")
         except Exception as exc:
             raise RuntimeError(f"WASM PII-Shield failed: {exc}") from exc
 

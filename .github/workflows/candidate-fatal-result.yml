@@ -1,0 +1,30 @@
+name: Unaccepted candidate - fatal result
+
+on:
+  push:
+    branches: [candidate/action-integration-20260908]
+
+permissions:
+  contents: read
+
+jobs:
+  confined-fatal-result:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Build hash-locked verifier dependencies
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          docker build -f docs/operations/fatal-result-20260908/Dockerfile.verify -t fatal-verifier .
+      - name: Independently execute candidate without network or credentials
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user 65534:65534 \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            --mount type=bind,source="$GITHUB_WORKSPACE",target=/work,readonly \
+            --workdir /work --env PYTHONDONTWRITEBYTECODE=1 --env HOME=/tmp \
+            fatal-verifier python docs/operations/fatal-result-20260908/verify_linux.py
