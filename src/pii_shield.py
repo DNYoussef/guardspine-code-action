@@ -43,7 +43,7 @@ import hashlib
 import json
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 
@@ -186,7 +186,7 @@ class PIIShieldResult:
 
     def to_metadata(self) -> dict[str, Any]:
         return {
-            "enabled": True,
+            "enabled": self.mode != "disabled",
             "mode": self.mode,
             "provider": self.provider,
             "changed": self.changed,
@@ -300,26 +300,6 @@ class PIIShieldClient:
     def _sha256(value: str) -> str:
         return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
 
-    @staticmethod
-    def _with_extra_metadata(
-        result: PIIShieldResult,
-        extra: dict[str, Any],
-    ) -> PIIShieldResult:
-        metadata = dict(result.metadata)
-        metadata.update(extra)
-        return PIIShieldResult(
-            sanitized_text=result.sanitized_text,
-            changed=result.changed,
-            redaction_count=result.redaction_count,
-            redactions_by_type=dict(result.redactions_by_type),
-            mode=result.mode,
-            provider=result.provider,
-            input_hash=result.input_hash,
-            output_hash=result.output_hash,
-            signals=list(result.signals),
-            metadata=metadata,
-        )
-
     def sanitize_text(
         self,
         text: str,
@@ -354,10 +334,10 @@ class PIIShieldClient:
                     include_findings=include_findings,
                     purpose=purpose,
                 )
-            except Exception as exc:
-                engine_error = str(exc)
+            except Exception:
                 if self.mode == "remote" or self.fail_closed:
-                    raise PIIShieldError(f"PII-Shield engine failed: {exc}") from exc
+                    # Engine exceptions can contain input; do not render or chain them.
+                    raise PIIShieldError("PII-Shield engine failed") from None
                 return PIIShieldResult(
                     sanitized_text=text,
                     changed=False,
@@ -371,7 +351,7 @@ class PIIShieldClient:
                     # "remote_error" was the HTTP-era key name; renamed so an
                     # auditor reading a bundle is not sent hunting for a
                     # network hop that does not exist.
-                    metadata={"warning": "PII-Shield engine failed; running fail-open passthrough", "engine_error": engine_error},
+                    metadata={"warning": "PII-Shield engine failed; running fail-open passthrough", "engine_error": "engine_failure"},
                 )
 
         # mode == "local" -- the only value left after auto/remote above,
@@ -439,29 +419,31 @@ class PIIShieldClient:
             purpose=purpose,
         )
         if not result.changed:
-            if preserved:
-                _reinject_hash_fields(work, preserved)
-            return work if preserved else document, result
+            return document, result
 
         try:
             sanitized_document = json.loads(result.sanitized_text)
             if preserved:
                 _reinject_hash_fields(sanitized_document, preserved)
             return sanitized_document, result
-        except json.JSONDecodeError as exc:
-            if self.fail_closed:
-                raise PIIShieldError(
-                    f"PII-Shield returned non-JSON sanitized content for {purpose}: {exc}"
-                ) from exc
-            enriched = self._with_extra_metadata(
+        except json.JSONDecodeError:
+            if self.mode == "remote" or self.fail_closed:
+                raise PIIShieldError("PII-Shield returned invalid JSON") from None
+            enriched = replace(
                 result,
-                {
-                    "parse_error": str(exc),
-                    "warning": f"sanitized {purpose} content was not valid JSON; fail-open passthrough",
+                sanitized_text=original_json,
+                changed=False,
+                redaction_count=0,
+                redactions_by_type={},
+                mode="auto",
+                provider="passthrough",
+                output_hash=result.input_hash,
+                signals=[],
+                metadata={
+                    "parse_error": "invalid_json",
+                    "warning": "PII-Shield returned invalid JSON; running fail-open passthrough",
                 },
             )
-            if preserved:
-                _reinject_hash_fields(document, preserved)
             return document, enriched
 
     def _sanitize_remote(
@@ -504,14 +486,11 @@ class PIIShieldClient:
         cascading past a hit and for mangling unbalanced quotes, both of
         which would corrupt a diff we then present as evidence.
         """
-        try:
-            sanitized = self._redact(text)
-            # The package uses an in-band sentinel: an identical whole input
-            # is conservatively rejected too; embedded literals remain valid.
-            if sanitized == "[PII_SHIELD_DROP: FATAL_ERROR]":
-                raise RuntimeError("PII-Shield engine returned a fatal error")
-        except Exception as exc:
-            raise RuntimeError(f"WASM PII-Shield failed: {exc}") from exc
+        sanitized = self._redact(text)
+        # The package uses an in-band sentinel: an identical whole input
+        # is conservatively rejected too; embedded literals remain valid.
+        if sanitized == "[PII_SHIELD_DROP: FATAL_ERROR]":
+            raise RuntimeError("PII-Shield engine returned a fatal error")
 
         changed = sanitized != text
         # The engine returns text, not a count. Counting its own marker is

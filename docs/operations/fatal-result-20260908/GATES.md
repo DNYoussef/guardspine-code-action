@@ -1,5 +1,10 @@
 # Gates: observable engine fatal return
 
+Historical contract for commit 5e71aa1 only, not the current verifier or an active
+concurrent leaf. Current acceptance uses ../adapter-failure-20260908/GATES.md.
+The criteria and OWNS below are retained as history; select the current ledger
+explicitly instead of executing this historical contract against HEAD.
+
 OWNS: src/pii_shield.py, tests/test_pii_shield_fatal_result.py, tests/test_pii_shield_decimal_regression.py, .github/workflows/candidate-fatal-result.yml, docs/operations/fatal-result-20260908/**
 
 Scope: Reject the exact whole-output package fatal marker at the shared adapter

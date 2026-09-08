@@ -10,7 +10,7 @@ FATAL = "[PII_SHIELD_DROP: FATAL_ERROR]"
 def test_exact_whole_input_sentinel_collision_fails_closed(monkeypatch):
     client = PIIShieldClient(enabled=True)
     monkeypatch.setattr(client, "_redact", lambda text: text)
-    with pytest.raises(PIIShieldError, match="engine returned a fatal error"):
+    with pytest.raises(PIIShieldError, match="^PII-Shield engine failed$"):
         client.sanitize_text(FATAL)
 
 
@@ -23,7 +23,7 @@ def test_exact_whole_input_sentinel_collision_fails_closed(monkeypatch):
 def test_fatal_result_raises(method, payload, mode, fail_closed, monkeypatch):
     client = PIIShieldClient(enabled=True, mode=mode, fail_closed=fail_closed)
     monkeypatch.setattr(client, "_redact", lambda text: FATAL)
-    with pytest.raises(PIIShieldError, match="engine returned a fatal error"):
+    with pytest.raises(PIIShieldError, match="^PII-Shield engine failed$"):
         getattr(client, method)(payload)
 
 
@@ -77,17 +77,22 @@ def test_actual_package_allocation_failure_is_observable(method, payload, mode, 
 
     shield_type, config_type = adapter._load_wasm_engine()
     policies = []
+    allocation_sizes = []
+
+    def fail_allocate(store, size):
+        allocation_sizes.append(size)
+        return 0
 
     def failing_shield(config):
         policies.append(config.fail_policy)
         shield = shield_type(config)
-        monkeypatch.setattr(shield, "allocate", lambda store, size: 0)
+        monkeypatch.setattr(shield, "allocate", fail_allocate)
         return shield
 
     monkeypatch.setattr(adapter, "_load_wasm_engine", lambda: (failing_shield, config_type))
     client = PIIShieldClient(enabled=True, mode=mode, fail_closed=fail_closed)
     if mode == "remote" or fail_closed:
-        with pytest.raises(PIIShieldError, match="engine returned a fatal error"):
+        with pytest.raises(PIIShieldError, match="^PII-Shield engine failed$"):
             getattr(client, method)(payload)
     else:
         returned = getattr(client, method)(payload)
@@ -100,6 +105,7 @@ def test_actual_package_allocation_failure_is_observable(method, payload, mode, 
         assert result.provider == "passthrough"
         assert "fail-open" in result.metadata["warning"]
     assert policies == ["closed"]
+    assert len(allocation_sizes) == 1 and allocation_sizes[0] > 0, "allocator was never reached"
 
 
 @pytest.mark.parametrize("text", [
@@ -113,3 +119,18 @@ def test_embedded_fatal_literal_is_not_an_engine_failure(text, monkeypatch):
     result = client.sanitize_text(text)
     assert result.sanitized_text == text
     assert not result.changed
+
+
+def test_allocation_control_rejects_setup_failure(monkeypatch):
+    original_setattr = monkeypatch.setattr
+
+    def fail_allocator_setup(target, name, value):
+        if name == "allocate":
+            raise AttributeError("synthetic missing allocator")
+        return original_setattr(target, name, value)
+
+    monkeypatch.setattr(monkeypatch, "setattr", fail_allocator_setup)
+    with pytest.raises(AssertionError, match="allocator was never reached"):
+        test_actual_package_allocation_failure_is_observable(
+            "sanitize_text", "alice@example.com", "auto", True, monkeypatch,
+        )

@@ -14,8 +14,12 @@ import xml.etree.ElementTree as ET
 
 # Git's canonical LF bytes, not the Windows working copy's CRLF bytes.
 EXPECTED = {
-    "src/pii_shield.py": "76be92aaa590eb64a732b295fb6f7f432843fee2586898f57840bd3f553d1023",
-    "tests/test_pii_shield_fatal_result.py": "c728a2eb23e20d56c9246c085e1bd42f5e2a61602e8834a105a6e4ae5174be1c",
+    "docs/operations/adapter-failure-20260908/verify_marker_mutation.py": "ee8a622dae1a0d0770e306c1de5d860d3848729f5ae4091875f0beff6e147041",
+    "src/pii_shield.py": "b0df245eb54d6535fd17630c079d010c6d28914694e30fc35f4904b8aa75cabe",
+    "tests/test_pii_shield_fatal_result.py": "d1055b3b25efccd3fbbd2fa900bb61363e14a9127ac8c834d3c60d52b8dcfea0",
+    "tests/test_pii_shield_failure_contract.py": "02cc609bda4fd4ba05f665627c1cf9ce07500902f0fa4c2f4f84abd65231fd78",
+    "tests/test_pii_zone_reconstruction.py": "9f7e16fa9554df7e029ae05422a9a6999b16d59914f6ccf073c724c416529692",
+    "tests/test_entrypoint_pii_shield.py": "ed1a7b4b6acbfcb3bf27594d69ae8d44fc142ea53fea5c99ce68106081aef2f9",
     "tests/test_pii_shield.py": "6bf205593de7d641ef4e60f4eab3ddbd9065155021dabae895404a8988c5f8e9",
     "tests/test_wasm_only_no_http.py": "aa39c96a5f4247ad8599019a52119dcc3ba6883663cce2ef3328ccb39bfb17c8",
     "requirements-ci.txt": "2b6cd69da8318a80e12627731cb264c9fb37543b7aecb69083711d82e81f52c9",
@@ -68,18 +72,26 @@ def main():
         completed = subprocess.run([
             sys.executable, "-m", "pytest", "tests/test_pii_shield_fatal_result.py",
             "tests/test_pii_shield.py", "tests/test_wasm_only_no_http.py",
+            "tests/test_pii_shield_failure_contract.py",
+            "tests/test_pii_zone_reconstruction.py", "tests/test_entrypoint_pii_shield.py",
             "-q", "-p", "no:cacheprovider",
             f"--junitxml={report}",
         ], check=False)
         if completed.returncode:
             return completed.returncode
         cases = ET.parse(report).findall(".//testcase")
-        # Measured 24 fatal controls plus 30 existing adapter/promise controls.
-        assert len(cases) == 54, len(cases)
+        # Measured by the six-file candidate run, including entrypoint regressions.
+        assert len(cases) == 87, len(cases)
         assert not any(case.find(tag) is not None for case in cases
                        for tag in ("skipped", "failure", "error"))
+        mutation = subprocess.run([
+            sys.executable, "-B",
+            "docs/operations/adapter-failure-20260908/verify_marker_mutation.py",
+        ], check=True, capture_output=True, text=True)
+        assert "FATAL_GUARD_REMOVAL_REJECTED" in mutation.stdout
+        print("FATAL_GUARD_REMOVAL_REJECTED", flush=True)
         print("EXCLUDED_NOT_RUN tests/test_pii_shield_decimal_regression.py", flush=True)
-        print("FATAL_LEAF_LINUX_54_VERIFIED", flush=True)
+        print("ADAPTER_LEAF_LINUX_87_VERIFIED", flush=True)
     return 0
 
 
