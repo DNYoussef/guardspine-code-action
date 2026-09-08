@@ -169,6 +169,8 @@ def _record_sanitization_stage(
     if summary is None:
         return None
 
+    # Stage snapshots may already be embedded in hashed bundle events.
+    summary = {**summary, "applied_to": list(summary["applied_to"])}
     if stage not in summary["applied_to"]:
         summary["applied_to"].append(stage)
 
@@ -883,11 +885,6 @@ def main():
             governance=build_governance_record(classifier, rubric_input=rubric),
         )
 
-        if sanitization_summary:
-            bundle["sanitization"] = dict(sanitization_summary)
-            if isinstance(bundle.get("analysis_snapshot"), dict):
-                bundle["analysis_snapshot"]["sanitization"] = dict(sanitization_summary)
-
         if pii_shield_enabled and pii_shield_sanitize_bundle:
             try:
                 bundle, bundle_result = pii_client.sanitize_json_document(
@@ -911,6 +908,20 @@ def main():
                 print(f"::warning::PII-Shield error in bundle sanitization: {exc}")
                 if pii_shield_fail_closed:
                     sys.exit(1)
+
+        # Current envelope metadata includes the bundle stage. Hashed events
+        # retain their earlier snapshots; later SARIF is not claimed here.
+        if sanitization_summary:
+            for target in (bundle, bundle.get("analysis_snapshot")):
+                if isinstance(target, dict):
+                    # Preserve sanitized strings (including operator settings).
+                    # Only derived stage/count/status fields need refreshing.
+                    target["sanitization"] = {
+                        **target.get("sanitization", {}),
+                        **{key: sanitization_summary[key] for key in (
+                            "applied_to", "redaction_count", "redactions_by_type", "status",
+                        )},
+                    }
 
         # The bundle was mutated after create_bundle stamped it (sanitization +
         # optional PII redaction above); re-seal so bundle_hash matches the FINAL

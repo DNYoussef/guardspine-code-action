@@ -14,6 +14,9 @@ import xml.etree.ElementTree as ET
 
 # Git's canonical LF bytes, not the Windows working copy's CRLF bytes.
 EXPECTED = {
+    "entrypoint.py": "59503fb58dbf6ae7d752afdc0b140927a2cdbef660b9ba8104c75b28f9d4d5ff",
+    "tests/test_entrypoint_summary_integrity.py": "8c52765acc8ddbd917c8da4953fdeb42d34932ee62ef9de28debe57cafac42fe",
+    "tests/test_antiforgery.py": "5514cd590a543ab228a77131344d4562814c0acbe39bb459adfb741b22ced239",
     "docs/operations/adapter-failure-20260908/verify_marker_mutation.py": "ee8a622dae1a0d0770e306c1de5d860d3848729f5ae4091875f0beff6e147041",
     "src/pii_shield.py": "b0df245eb54d6535fd17630c079d010c6d28914694e30fc35f4904b8aa75cabe",
     "tests/test_pii_shield_fatal_result.py": "d1055b3b25efccd3fbbd2fa900bb61363e14a9127ac8c834d3c60d52b8dcfea0",
@@ -74,14 +77,15 @@ def main():
             "tests/test_pii_shield.py", "tests/test_wasm_only_no_http.py",
             "tests/test_pii_shield_failure_contract.py",
             "tests/test_pii_zone_reconstruction.py", "tests/test_entrypoint_pii_shield.py",
+            "tests/test_entrypoint_summary_integrity.py", "tests/test_antiforgery.py",
             "-q", "-p", "no:cacheprovider",
             f"--junitxml={report}",
         ], check=False)
         if completed.returncode:
             return completed.returncode
         cases = ET.parse(report).findall(".//testcase")
-        # Measured by the six-file candidate run, including entrypoint regressions.
-        assert len(cases) == 87, len(cases)
+        # Measured by the eight-file candidate run, including signed saved bundles.
+        assert len(cases) == 107, len(cases)
         assert not any(case.find(tag) is not None for case in cases
                        for tag in ("skipped", "failure", "error"))
         mutation = subprocess.run([
@@ -91,7 +95,7 @@ def main():
         assert "FATAL_GUARD_REMOVAL_REJECTED" in mutation.stdout
         print("FATAL_GUARD_REMOVAL_REJECTED", flush=True)
         print("EXCLUDED_NOT_RUN tests/test_pii_shield_decimal_regression.py", flush=True)
-        print("ADAPTER_LEAF_LINUX_87_VERIFIED", flush=True)
+        print("ENTRYPOINT_SUMMARY_LINUX_107_VERIFIED", flush=True)
     return 0
 
 
