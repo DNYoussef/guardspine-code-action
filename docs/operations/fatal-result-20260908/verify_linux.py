@@ -14,7 +14,8 @@ import xml.etree.ElementTree as ET
 
 # Git's canonical LF bytes, not the Windows working copy's CRLF bytes.
 EXPECTED = {
-    "entrypoint.py": "59503fb58dbf6ae7d752afdc0b140927a2cdbef660b9ba8104c75b28f9d4d5ff",
+    "entrypoint.py": "3949039bddfad1290de93259a9e5e95eb60bd090987ec078ef2ee0c6aef684ab",
+    "tests/test_entrypoint_failure_reporting.py": "d27115d96573c80c9a8a28a39485103f5c3ec4d7d305e8ae71dec9efd8902955",
     "tests/test_entrypoint_summary_integrity.py": "8c52765acc8ddbd917c8da4953fdeb42d34932ee62ef9de28debe57cafac42fe",
     "tests/test_antiforgery.py": "5514cd590a543ab228a77131344d4562814c0acbe39bb459adfb741b22ced239",
     "docs/operations/adapter-failure-20260908/verify_marker_mutation.py": "ee8a622dae1a0d0770e306c1de5d860d3848729f5ae4091875f0beff6e147041",
@@ -78,14 +79,15 @@ def main():
             "tests/test_pii_shield_failure_contract.py",
             "tests/test_pii_zone_reconstruction.py", "tests/test_entrypoint_pii_shield.py",
             "tests/test_entrypoint_summary_integrity.py", "tests/test_antiforgery.py",
+            "tests/test_entrypoint_failure_reporting.py",
             "-q", "-p", "no:cacheprovider",
             f"--junitxml={report}",
         ], check=False)
         if completed.returncode:
             return completed.returncode
         cases = ET.parse(report).findall(".//testcase")
-        # Measured by the eight-file candidate run, including signed saved bundles.
-        assert len(cases) == 107, len(cases)
+        # Measured by the nine-file run, including actual entrypoint failure paths.
+        assert len(cases) == 143, len(cases)
         assert not any(case.find(tag) is not None for case in cases
                        for tag in ("skipped", "failure", "error"))
         mutation = subprocess.run([
@@ -95,7 +97,7 @@ def main():
         assert "FATAL_GUARD_REMOVAL_REJECTED" in mutation.stdout
         print("FATAL_GUARD_REMOVAL_REJECTED", flush=True)
         print("EXCLUDED_NOT_RUN tests/test_pii_shield_decimal_regression.py", flush=True)
-        print("ENTRYPOINT_SUMMARY_LINUX_107_VERIFIED", flush=True)
+        print("ENTRYPOINT_REPORTING_LINUX_143_VERIFIED", flush=True)
     return 0
 
 

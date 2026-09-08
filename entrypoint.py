@@ -161,6 +161,15 @@ def _init_sanitization_summary(
     }
 
 
+def _report_pii_failure(stage: str, stopped: bool) -> None:
+    # Never interpolate exception text, error types, or caller-controlled labels.
+    if stage not in {"setup", "ai_prompt", "pr_comment", "evidence_bundle", "sarif"}:
+        stage = "unknown"
+    level = "error" if stopped else "warning"
+    consequence = "processing stopped" if stopped else "continuing with unsanitized content"
+    print(f"::{level}::PII-Shield {stage} failed; {consequence}")
+
+
 def _record_sanitization_stage(
     summary: dict[str, Any] | None,
     stage: str,
@@ -171,6 +180,13 @@ def _record_sanitization_stage(
 
     # Stage snapshots may already be embedded in hashed bundle events.
     summary = {**summary, "applied_to": list(summary["applied_to"])}
+    if result is None or result.provider == "passthrough":
+        summary["status"] = "error"
+        if result is not None:
+            _report_pii_failure(stage, stopped=False)
+        return summary
+    if result.mode == "disabled":
+        return summary
     if stage not in summary["applied_to"]:
         summary["applied_to"].append(stage)
 
@@ -179,7 +195,7 @@ def _record_sanitization_stage(
         summary.get("redactions_by_type", {}),
         result.redactions_by_type,
     )
-    if result.changed:
+    if result.changed and summary["status"] != "error":
         summary["status"] = "sanitized"
     elif summary["status"] == "none" and result.redaction_count > 0:
         summary["status"] = "partial"
@@ -529,16 +545,21 @@ def main():
     # when it does not (measured) -- so exporting it turned a config typo
     # into a total redaction outage. The client warns that it is ignored.
     pii_safe_regex_list = get_env("INPUT_PII_SAFE_REGEX_LIST")
-    pii_client = PIIShieldClient(
-        enabled=pii_shield_enabled,
-        mode=pii_shield_mode,
-        endpoint=pii_shield_endpoint,
-        api_key=pii_shield_api_key,
-        timeout_seconds=pii_shield_timeout,
-        fail_closed=pii_shield_fail_closed,
-        salt_fingerprint=pii_shield_salt_fingerprint,
-        safe_regex_list=pii_safe_regex_list,
-    )
+    try:
+        pii_client = PIIShieldClient(
+            enabled=pii_shield_enabled,
+            mode=pii_shield_mode,
+            endpoint=pii_shield_endpoint,
+            api_key=pii_shield_api_key,
+            timeout_seconds=pii_shield_timeout,
+            fail_closed=pii_shield_fail_closed,
+            salt_fingerprint=pii_shield_salt_fingerprint,
+            safe_regex_list=pii_safe_regex_list,
+        )
+    except Exception:
+        _report_pii_failure("setup", stopped=True)
+        print("::error::Check PII-Shield configuration. Use pii_shield_mode='auto'.")
+        sys.exit(1)
 
     # Auto-merge
     auto_merge = parse_bool(get_env("INPUT_AUTO_MERGE", "false"))
@@ -643,13 +664,15 @@ def main():
                     f"::notice::PII-Shield redacted {pii_shield_result.redaction_count} "
                     f"match(es) for AI review input"
                 )
-            else:
+            elif pii_shield_result.provider != "passthrough" and pii_shield_result.mode != "disabled":
                 print("::notice::PII-Shield enabled; no redactable content detected")
-        except PIIShieldError as exc:
-            print(f"::error::PII-Shield failed in fail-closed mode: {exc}")
+        except PIIShieldError:
+            _report_pii_failure("ai_prompt", stopped=True)
+            if pii_shield_mode.strip().lower() == "local":
+                print("::error::Enabled local mode is unsupported. Use pii_shield_mode='auto'.")
             sys.exit(1)
-        except Exception as exc:
-            print(f"::error::Unexpected PII-Shield error: {exc}")
+        except Exception:
+            _report_pii_failure("ai_prompt", stopped=True)
             sys.exit(1)
     print("::endgroup::")
 
@@ -832,11 +855,12 @@ def main():
                         f"::notice::PII-Shield redacted {comment_result.redaction_count} "
                         f"match(es) in PR comment body"
                     )
-            except PIIShieldError as exc:
-                print(f"::error::PII-Shield failed while sanitizing PR comment: {exc}")
+            except PIIShieldError:
+                _report_pii_failure("pr_comment", stopped=True)
                 sys.exit(1)
-            except Exception as exc:
-                print(f"::warning::PII-Shield error in comment sanitization: {exc}")
+            except Exception:
+                _report_pii_failure("pr_comment", stopped=pii_shield_fail_closed)
+                sanitization_summary = _record_sanitization_stage(sanitization_summary, "pr_comment", None)
                 if pii_shield_fail_closed:
                     sys.exit(1)
         try:
@@ -901,11 +925,12 @@ def main():
                         f"::notice::PII-Shield redacted {bundle_result.redaction_count} "
                         f"match(es) in evidence bundle"
                     )
-            except PIIShieldError as exc:
-                print(f"::error::PII-Shield failed while sanitizing evidence bundle: {exc}")
+            except PIIShieldError:
+                _report_pii_failure("evidence_bundle", stopped=True)
                 sys.exit(1)
-            except Exception as exc:
-                print(f"::warning::PII-Shield error in bundle sanitization: {exc}")
+            except Exception:
+                _report_pii_failure("evidence_bundle", stopped=pii_shield_fail_closed)
+                sanitization_summary = _record_sanitization_stage(sanitization_summary, "evidence_bundle", None)
                 if pii_shield_fail_closed:
                     sys.exit(1)
 
@@ -998,11 +1023,12 @@ def main():
                         f"::notice::PII-Shield redacted {sarif_result.redaction_count} "
                         f"match(es) in SARIF output"
                     )
-            except PIIShieldError as exc:
-                print(f"::error::PII-Shield failed while sanitizing SARIF output: {exc}")
+            except PIIShieldError:
+                _report_pii_failure("sarif", stopped=True)
                 sys.exit(1)
-            except Exception as exc:
-                print(f"::warning::PII-Shield error in SARIF sanitization: {exc}")
+            except Exception:
+                _report_pii_failure("sarif", stopped=pii_shield_fail_closed)
+                sanitization_summary = _record_sanitization_stage(sanitization_summary, "sarif", None)
                 if pii_shield_fail_closed:
                     sys.exit(1)
         sarif_path = Path(get_env("GITHUB_WORKSPACE", ".")) / "guardspine-results.sarif"
