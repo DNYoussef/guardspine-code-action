@@ -385,6 +385,8 @@ class PIIShieldClient:
         self,
         document: Any,
         purpose: str = "json_document",
+        *,
+        preserve_hash_fields: bool = True,
     ) -> tuple[Any, PIIShieldResult]:
         """
         Sanitize a JSON-like structure while preserving schema shape when possible.
@@ -392,11 +394,15 @@ class PIIShieldClient:
         Hash and signature fields are extracted before sanitization and
         re-injected afterwards: the in-process engine redacts bare SHA-256
         hex on sight, and a redacted chain hash is unverifiable evidence.
+        Producer drafts pass preserve_hash_fields=False: their exact provenance
+        slots are handled by the producer, so user fields with hash-like names
+        cannot bypass scanning. That path also refuses duplicate JSON keys.
         """
         import copy as _copy
 
         work = _copy.deepcopy(document) if isinstance(document, (dict, list)) else document
-        preserved = _extract_hash_fields(work) if isinstance(work, (dict, list)) else {}
+        preserved = (_extract_hash_fields(work)
+                     if preserve_hash_fields and isinstance(work, (dict, list)) else {})
 
         # separators MUST keep the space after the colon. Measured against
         # pii-shield-wasi 2.1.1: with compact '":"' the engine redacts
@@ -422,7 +428,18 @@ class PIIShieldClient:
             return document, result
 
         try:
-            sanitized_document = json.loads(result.sanitized_text)
+            def unique_object(pairs):
+                output = {}
+                for key, value in pairs:
+                    if key in output:
+                        raise PIIShieldError('PII-Shield returned duplicate JSON keys')
+                    output[key] = value
+                return output
+
+            sanitized_document = json.loads(
+                result.sanitized_text,
+                object_pairs_hook=unique_object if not preserve_hash_fields else None,
+            )
             if preserved:
                 _reinject_hash_fields(sanitized_document, preserved)
             return sanitized_document, result

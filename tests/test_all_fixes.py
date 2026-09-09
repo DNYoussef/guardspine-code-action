@@ -26,7 +26,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "tests" / "stubs"))
 sys.path.insert(0, str(ROOT))
 
 from risk_classifier import RiskClassifier, Finding
@@ -37,7 +36,7 @@ from decision_engine import DecisionPacket, render_decision_card
 from entrypoint import map_decision_to_verdict
 
 # Stub GitHub objects for testing
-from github import Github
+from stubs.github import Github
 
 
 # ---------------------------------------------------------------------------

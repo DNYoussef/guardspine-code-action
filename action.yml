@@ -107,7 +107,7 @@ inputs:
     required: false
     default: '5'
   pii_shield_fail_closed:
-    description: 'Fail workflow if PII-Shield redaction errors occur (recommended: true for production)'
+    description: 'Fail workflow on redaction errors (recommended: true); invalid bundle structure or identity and fatal shield failures always stop'
     required: false
     default: 'true'
   pii_shield_salt_fingerprint:

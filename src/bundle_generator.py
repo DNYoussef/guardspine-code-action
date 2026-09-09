@@ -11,11 +11,13 @@ retained for backward compatibility with existing consumers/tests.
 
 from __future__ import annotations
 
+import copy
 import hashlib
+import re
 import uuid
 from base64 import b64encode, b64decode
 from datetime import datetime, timezone
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 import guardspine_prompts
@@ -25,9 +27,63 @@ if TYPE_CHECKING:
     from .analyzer import AnalysisResult
 
 try:
-    from .canonical_json import canonical_json_dumps
+    from .canonical_json import canonical_json_dumps, canonicalize_for_json
 except ImportError:  # pragma: no cover - fallback for direct module imports in tests
-    from canonical_json import canonical_json_dumps
+    from canonical_json import canonical_json_dumps, canonicalize_for_json
+
+
+class InvalidBundleDraft(ValueError):
+    """The sanitizer cannot change evidence structure or protected facts."""
+
+
+def _validate_sanitized_draft(original: dict, sanitized: dict, protected_paths=frozenset()) -> None:
+    # Compare iteratively. The original's shape bounds traversal; reject extra
+    # keys/list elements before descending. Never include content or keys in errors.
+    pending = [((), original, sanitized)]
+    while pending:
+        path, before, after = pending.pop()
+        valid = type(before) is type(after)
+        if valid and path in protected_paths:
+            valid = before == after
+        if valid and isinstance(before, dict):
+            valid = before.keys() == after.keys()
+            if valid:
+                pending.extend(((*path, key), value, after[key]) for key, value in before.items())
+        elif valid and isinstance(before, list):
+            valid = len(before) == len(after)
+            if valid:
+                pending.extend(((*path, i), value, after[i]) for i, value in enumerate(before))
+        elif valid and isinstance(before, str):
+            protected = path in protected_paths or path[0] == '_labels'
+            valid = not protected or before == after
+        elif valid:
+            valid = before == after
+            if isinstance(before, float):
+                valid = before.hex() == after.hex()
+        if not valid:
+            raise InvalidBundleDraft('Invalid sanitized bundle draft')
+
+
+def _accounting_fields(summary: dict) -> dict:
+    """Only validated derived metadata may be added after content validation."""
+    stages = {'ai_prompt', 'pr_comment', 'evidence_bundle', 'sarif'}
+    try:
+        applied = summary['applied_to']
+        counts = summary['redactions_by_type']
+        valid = (type(summary) is dict and type(applied) is list
+                 and all(type(stage) is str and stage in stages for stage in applied)
+                 and len(set(applied)) == len(applied)
+                 and summary['status'] in {'none', 'error', 'partial', 'sanitized'}
+                 and type(summary['redaction_count']) is int and summary['redaction_count'] >= 0
+                 and type(counts) is dict
+                 and all(type(key) is str and type(value) is int and value >= 0
+                         for key, value in counts.items()))
+        if valid:
+            return copy.deepcopy({key: summary[key] for key in (
+                'applied_to', 'redaction_count', 'redactions_by_type', 'status')})
+    except (KeyError, TypeError):
+        pass
+    raise InvalidBundleDraft('Invalid sanitized bundle accounting')
 
 
 def build_governance_record(classifier, rubric_input: str = "default") -> dict:
@@ -96,6 +152,8 @@ class BundleGenerator:
         allow_insecure_signature_fallback: bool = False,
         id_nonce: str = "",
         governance: dict | None = None,
+        sanitize_draft: Callable[[dict], tuple[dict | None, Any]] | None = None,
+        record_sanitization: Callable[[Any], dict | None] | None = None,
     ) -> dict[str, Any]:
         """
         Create a complete evidence bundle for a PR.
@@ -124,6 +182,13 @@ class BundleGenerator:
                 will refuse on the second run. Pass a run-scoped value (e.g. a
                 CI run id) to make each run's bundle_id unique while leaving
                 commit_sha/context untouched.
+            sanitize_draft: Optional transform of a detached pre-proof draft.
+                Return (document, outcome), or (None, None) for failed original-only
+                fallback with a recorder. Returned structure and protected facts
+                are validated before any event hash or signature is produced.
+            record_sanitization: Outcome-only accounting callback, invoked after
+                validation. Only its four validated derived fields are projected;
+                it cannot edit draft content. Historical event summaries stay old.
 
         Returns:
             Complete evidence bundle as dict
@@ -131,9 +196,8 @@ class BundleGenerator:
         bundle_id = self._generate_bundle_id(repository, pr.number, commit_sha, id_nonce=id_nonce)
         created_at = datetime.now(timezone.utc).isoformat()
 
-        # Build event chain
+        # Assemble content first. No hashes or signatures exist at this boundary.
         self.events = []
-        previous_hash = ""
 
         # Event 1: PR Created/Updated
         pr_event = BundleEvent(
@@ -148,7 +212,6 @@ class BundleGenerator:
                 "head_sha": commit_sha,
             }
         )
-        previous_hash = pr_event.compute_hash(previous_hash)
         self.events.append(pr_event)
 
         raw_diff_hash = analysis.get("raw_diff_hash", analysis.get("diff_hash", ""))
@@ -158,6 +221,12 @@ class BundleGenerator:
 
         # Extract per-model provenance for sealing into the hash chain.
         mmr = analysis.get("multi_model_review") or {}
+        if sanitize_draft is not None:
+            reviews = mmr.get('reviews') if isinstance(mmr, dict) else None
+            if (not isinstance(mmr, dict) or reviews is not None and
+                    (not isinstance(reviews, list) or
+                     any(not isinstance(review, dict) for review in reviews))):
+                raise InvalidBundleDraft('Invalid producer bundle draft')
         reviews_sealed = [
             {
                 "model_name": r.get("model_name", ""),
@@ -188,7 +257,6 @@ class BundleGenerator:
                 "reviews_sealed": reviews_sealed,
             }
         )
-        previous_hash = analysis_event.compute_hash(previous_hash)
         self.events.append(analysis_event)
 
         # Event 3: Risk Classification
@@ -202,7 +270,6 @@ class BundleGenerator:
                 "scores": risk_result.get("scores", {}),
             }
         )
-        previous_hash = risk_event.compute_hash(previous_hash)
         self.events.append(risk_event)
 
         # Event 4: Approval (if approvers provided)
@@ -217,12 +284,7 @@ class BundleGenerator:
                         "commit_sha": commit_sha,
                     }
                 )
-                previous_hash = approval_event.compute_hash(previous_hash)
                 self.events.append(approval_event)
-
-        # Build complete bundle
-        v020_items = self._build_v020_items()
-        v020_proof = self._build_v020_proof(v020_items)
 
         bundle = {
             "version": self.SPEC_VERSION,
@@ -239,14 +301,8 @@ class BundleGenerator:
             # DEPRECATED: legacy fields retained for backward compatibility.
             # Consumers should use 'items' + 'immutability_proof' instead.
             # These fields will be removed in the next major version.
-            "events": [self._event_to_dict(e) for e in self.events],
-            "hash_chain": {
-                "algorithm": "sha256",
-                "final_hash": previous_hash,
-                "event_count": len(self.events),
-            },
-            "items": v020_items,
-            "immutability_proof": v020_proof,
+            "events": [{key: value for key, value in self._event_to_dict(e).items()
+                        if key != 'hash'} for e in self.events],
             "summary": {
                 "risk_tier": risk_result.get("risk_tier", "L2"),
                 "risk_drivers": risk_result.get("risk_drivers", []),
@@ -276,12 +332,207 @@ class BundleGenerator:
                 "pii_shield": pii_shield,
                 "sanitization": sanitization,
             },
-            "signatures": [],
         }
         if analysis.get("review_coverage") is None:
             bundle["analysis_snapshot"].pop("review_coverage")
         if governance is not None:
             bundle["governance"] = governance
+
+        if sanitize_draft is not None:
+            try:
+                original = canonicalize_for_json(bundle)
+            except Exception:
+                raise InvalidBundleDraft('Invalid producer bundle draft') from None
+            # Only constructor-owned slots are withheld, never matching keys in
+            # user dictionaries. User actors and content remain in the scan.
+            held = []
+
+            def take(path, keys):
+                target = original
+                for part in path:
+                    target = target[part]
+                held.append((path, {key: target[key] for key in keys}))
+                for key in keys:
+                    if isinstance(target, dict):
+                        target.pop(key)
+                    else:
+                        target[key] = None
+
+            take((), ('version', 'guardspine_spec_version', 'created_at'))
+            for i, event in enumerate(self.events):
+                keys = ['event_type']
+                if i != 0:
+                    keys.append('timestamp')
+                if event.event_type in ('analysis_completed', 'risk_classified'):
+                    keys.append('actor')
+                take(('events', i), keys)
+
+            # Valid digests at explicit provenance slots are not free-form user
+            # text. Invalid/non-digest values are scanned, never silently exempted.
+            owners = [(('events', 1, 'data'), ('diff_hash', 'raw_diff_hash', 'analysis_diff_hash')),
+                      (('analysis_snapshot',), ('raw_diff_hash', 'analysis_diff_hash'))]
+            for parent in ((), ('analysis_snapshot',), ('events', 1, 'data')):
+                owners.append(((*parent, 'sanitization'), ('input_hash', 'output_hash')))
+            for parent in (('analysis_snapshot',), ('events', 1, 'data')):
+                owners.append(((*parent, 'pii_shield'), ('input_hash', 'output_hash')))
+            for i in range(len(reviews_sealed)):
+                owners.append((('events', 1, 'data', 'reviews_sealed', i),
+                               ('prompt_hash', 'response_hash')))
+            for i in range(len((mmr.get('reviews') or []))):
+                owners.append((('analysis_snapshot', 'multi_model_review', 'reviews', i),
+                               ('prompt_hash', 'response_hash')))
+            protected_paths = {('bundle_id',), ('context', 'repository'),
+                ('context', 'commit_sha'), ('summary', 'risk_tier'),
+                ('summary', 'decision'), ('analysis_snapshot', 'preliminary_tier'),
+                ('governance', 'catalogue_version'), ('governance', 'rubric_input'),
+                ('analysis_snapshot', 'ai_summary', 'intent'),
+                ('analysis_snapshot', 'multi_model_review', 'rubric_name'),
+                ('analysis_snapshot', 'multi_model_review', 'consensus', 'consensus_risk')}
+            try:
+                if __package__:
+                    from .risk_classifier import RiskClassifier
+                else:
+                    from risk_classifier import RiskClassifier
+                public_catalogue = dict(RiskClassifier.shipped_rubrics())
+                public_packs = frozenset(public_catalogue)
+            except Exception:
+                raise InvalidBundleDraft('Invalid producer bundle draft') from None
+            if 'governance' in original:
+                if not isinstance(original['governance'], dict):
+                    raise InvalidBundleDraft('Invalid producer bundle draft')
+                for key in ('requested_packs', 'loaded_packs'):
+                    values = original['governance'].get(key, [])
+                    if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+                        raise InvalidBundleDraft('Invalid producer bundle draft')
+                    protected_paths.update(('governance', key, i) for i in range(len(values)))
+                    if key in original['governance']:
+                        # Public catalogue IDs at these semantic slots are enums,
+                        # not customer text. Unknown names remain scanned/equal.
+                        take(('governance', key), [i for i, value in enumerate(values) if value in public_packs])
+            public_rules = {}
+            for collection, fields in (
+                ('findings', ('id', 'rule_id', 'source_pack', 'severity', 'zone', 'control_category')),
+                ('risk_drivers', ('type', 'zone', 'rule', 'severity', 'tier')),
+            ):
+                records = original['summary'][collection]
+                if not isinstance(records, list) or any(not isinstance(record, dict) for record in records):
+                    raise InvalidBundleDraft('Invalid producer bundle draft')
+                for i, record in enumerate(records):
+                    path = ('summary', collection, i)
+                    protected_paths.update((*path, key) for key in fields)
+                    pack = record.get('source_pack')
+                    if collection == 'findings' and isinstance(pack, str) and pack in public_packs:
+                        if pack not in public_rules:
+                            try:
+                                rules, _ = RiskClassifier._parse_rubric_file(public_catalogue[pack], source_pack=pack)
+                                public_rules[pack] = frozenset(rule['id'] for rule in rules)
+                            except Exception:
+                                raise InvalidBundleDraft('Invalid producer bundle draft') from None
+                        rule_id = record.get('rule_id')
+                        if isinstance(rule_id, str) and rule_id in public_rules[pack]:
+                            take(path, ['rule_id'])
+                            if record.get('id') == f'RUBRIC-{rule_id}':
+                                take(path, ['id'])
+                        take(path, ['source_pack'])
+            for i, event in enumerate(self.events):
+                protected_paths.add(('events', i, 'timestamp'))
+                protected_paths.update(('events', i, 'data', key) for key in (
+                    'head_sha', 'commit_sha', 'risk_tier', 'risk_tier_at_approval'))
+            for path, keys in owners:
+                if path[-1] == 'pii_shield':
+                    protected_paths.add((*path, 'provider'))
+                if isinstance(path[-1], int):
+                    protected_paths.update((*path, key) for key in ('model_name', 'model_id', 'provider',
+                                                                   'risk_assessment', 'intent'))
+            # Protect metadata only at the three producer-owned projections.
+            # Same-named keys within customer findings remain ordinary content.
+            for parent in ((), ('analysis_snapshot',), ('events', 1, 'data')):
+                target = original
+                for part in parent:
+                    target = target[part]
+                pending_metadata = [((*parent, 'sanitization'), target['sanitization'])]
+                while pending_metadata:
+                    path, value = pending_metadata.pop()
+                    if isinstance(value, dict):
+                        pending_metadata.extend(((*path, key), child) for key, child in value.items()
+                                                if key != 'salt_fingerprint')
+                    elif isinstance(value, list):
+                        pending_metadata.extend(((*path, i), child) for i, child in enumerate(value))
+                    else:
+                        protected_paths.add(path)
+            for path, keys in owners:
+                target = original
+                for part in path:
+                    target = target[part]
+                if isinstance(target, dict):
+                    protected_paths.update((*path, key) for key in keys if key in target)
+                    take(path, [key for key in keys if isinstance(target.get(key), str)
+                                and re.fullmatch(r'(?:sha256:)?[0-9a-f]{64}', target[key])])
+                    if path[-1] == 'pii_shield' and target.get('provider') in (
+                            'pii-shield-wasi', 'passthrough', 'none'):
+                        take(path, ['provider'])
+                    if path[-1] == 'pii_shield' and 'signal_count' in target:
+                        if type(target['signal_count']) is not int or target['signal_count'] < 0:
+                            raise InvalidBundleDraft('Invalid sanitized bundle accounting')
+                        # to_metadata derives this count from signal inventory;
+                        # it is not a customer numeric cell or free-form finding.
+                        take(path, ['signal_count'])
+            # JSON redaction scans values, not object keys. Present user-subtree
+            # keys as values too; changed keys refuse rather than rewriting schema.
+            pending = [original['summary']['risk_drivers'], original['summary']['findings'],
+                       original['events'][2]['data']['scores']]
+            snapshot = original['analysis_snapshot']
+            pending.extend(snapshot[key] for key in ('sensitive_zones', 'ai_summary',
+                           'multi_model_review', 'model_errors', 'review_coverage') if key in snapshot)
+            if 'governance' in original:
+                pending.append(original['governance'].get('skipped_packs', {}))
+            keys = []
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    keys.extend(value)
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+            keys = list(dict.fromkeys(keys))
+            if attestation_key_id is not None:
+                keys.append(attestation_key_id)
+            original['_labels'] = keys
+            sanitized, outcome = sanitize_draft(copy.deepcopy(original))
+            # Explicit failed-scan signal: never reuse the callback's copy.
+            if sanitized is None and outcome is None and record_sanitization is not None:
+                sanitized = original
+            _validate_sanitized_draft(original, sanitized, protected_paths)
+            bundle = copy.deepcopy(sanitized)
+            bundle.pop('_labels')
+            if record_sanitization is not None:
+                try:
+                    summary = record_sanitization(outcome)
+                    if summary is not None:
+                        fields = _accounting_fields(summary)
+                        for target in (bundle, bundle['analysis_snapshot']):
+                            if type(target['sanitization']) is not dict:
+                                raise InvalidBundleDraft('Invalid sanitized bundle accounting')
+                            target['sanitization'] = {**target['sanitization'], **copy.deepcopy(fields)}
+                except Exception:
+                    raise InvalidBundleDraft('Invalid sanitized bundle accounting') from None
+
+            for path, fields in held:
+                target = bundle
+                for part in path:
+                    target = target[part]
+                for key, value in fields.items():
+                    target[key] = value
+
+        self.events = [BundleEvent(**event) for event in bundle['events']]
+        previous_hash = ''
+        for event in self.events:
+            previous_hash = event.compute_hash(previous_hash)
+        bundle['events'] = [self._event_to_dict(event) for event in self.events]
+        bundle['hash_chain'] = {'algorithm': 'sha256', 'final_hash': previous_hash,
+                                'event_count': len(self.events)}
+        bundle['items'] = self._build_v020_items()
+        bundle['immutability_proof'] = self._build_v020_proof(bundle['items'])
 
         # Seal as the final step: whole-bundle hash + optional signature.
         self.seal_bundle(
@@ -302,9 +553,8 @@ class BundleGenerator:
     ) -> dict:
         """Stamp the whole-bundle hash (and optionally sign). MUST be the LAST
         thing done to a bundle: any mutation afterwards invalidates the seal.
-        If a bundle is mutated after create_bundle (e.g. post-hoc PII
-        sanitization), call this again to re-seal the final bytes -- otherwise
-        the saved artifact fails its own verify_bundle_chain.
+        This only seals the outer envelope. It cannot repair event hashes or
+        item proofs after content changes; sanitize producer drafts before hashes.
 
         If the bundle already carries signatures, re-sealing would invalidate them
         (the payload changed). Pass attestation_key to RE-SIGN, or strip_signatures=

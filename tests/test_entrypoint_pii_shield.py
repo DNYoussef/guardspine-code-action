@@ -429,7 +429,7 @@ def _make_pii_client(raw_diff):
         input_hash="sha256:in2", output_hash="sha256:out2",
         signals=[], metadata={},
     )
-    def _sanitize_json_side_effect(document, purpose="json_document"):
+    def _sanitize_json_side_effect(document, purpose="json_document", **options):
         import copy as _copy
         sanitized = _copy.deepcopy(document) if isinstance(document, (dict, list)) else document
         result = PIIShieldResult(
@@ -513,13 +513,8 @@ class TestBundleSanitizationPath(unittest.TestCase):
                      patch("entrypoint.RiskClassifier", StubClassifier), \
                      patch("entrypoint.PIIShieldClient", return_value=pii_client), \
                      patch("entrypoint.DecisionEngine") as mock_engine, \
-                     patch("entrypoint.render_decision_card", return_value="card"), \
-                     patch("entrypoint.BundleGenerator") as mock_gen:
+                     patch("entrypoint.render_decision_card", return_value="card"):
                     mock_engine.return_value.decide.return_value = packet
-                    mock_gen.return_value.create_bundle.return_value = {
-                        "bundle_id": "test-bundle-001",
-                        "analysis_snapshot": {},
-                    }
                     with self.assertRaises(SystemExit) as ctx:
                         main()
 

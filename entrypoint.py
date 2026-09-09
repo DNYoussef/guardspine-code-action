@@ -25,7 +25,7 @@ from github.PullRequest import PullRequest
 
 from src.analyzer import DiffAnalyzer
 from src.risk_classifier import RiskClassifier
-from src.bundle_generator import BundleGenerator, build_governance_record
+from src.bundle_generator import BundleGenerator, InvalidBundleDraft, build_governance_record
 from src.pr_commenter import PRCommenter
 from src.sarif_exporter import SARIFExporter
 from src.pii_shield import PIIShieldClient, PIIShieldError
@@ -897,62 +897,45 @@ def main():
         bundle_id_nonce = os.environ.get("GUARDSPINE_BUNDLE_NONCE", "")
         if sanitization_summary:
             analysis["sanitization"] = dict(sanitization_summary)
-        bundle = generator.create_bundle(
-            pr=pr,
-            analysis=analysis,
-            risk_result=risk_result,
-            repository=github_repository,
-            commit_sha=github_sha,
-            attestation_key=attestation_key,
-            attestation_key_id=attestation_key_id,
-            id_nonce=bundle_id_nonce,
-            governance=build_governance_record(classifier, rubric_input=rubric),
-        )
-
-        if pii_shield_enabled and pii_shield_sanitize_bundle:
+        def sanitize_bundle_draft(draft):
             try:
-                bundle, bundle_result = pii_client.sanitize_json_document(
-                    bundle,
-                    purpose="evidence_bundle",
-                )
-                sanitization_summary = _record_sanitization_stage(
-                    sanitization_summary,
-                    "evidence_bundle",
-                    bundle_result,
-                )
-                if bundle_result.changed:
-                    print(
-                        f"::notice::PII-Shield redacted {bundle_result.redaction_count} "
-                        f"match(es) in evidence bundle"
-                    )
+                return pii_client.sanitize_json_document(
+                    draft, purpose="evidence_bundle", preserve_hash_fields=False)
             except PIIShieldError:
                 _report_pii_failure("evidence_bundle", stopped=True)
                 sys.exit(1)
             except Exception:
                 _report_pii_failure("evidence_bundle", stopped=pii_shield_fail_closed)
-                sanitization_summary = _record_sanitization_stage(sanitization_summary, "evidence_bundle", None)
                 if pii_shield_fail_closed:
                     sys.exit(1)
+                return None, None
 
-        # Current envelope metadata includes the bundle stage. Hashed events
-        # retain their earlier snapshots; later SARIF is not claimed here.
-        if sanitization_summary:
-            for target in (bundle, bundle.get("analysis_snapshot")):
-                if isinstance(target, dict):
-                    # Preserve sanitized strings (including operator settings).
-                    # Only derived stage/count/status fields need refreshing.
-                    target["sanitization"] = {
-                        **target.get("sanitization", {}),
-                        **{key: sanitization_summary[key] for key in (
-                            "applied_to", "redaction_count", "redactions_by_type", "status",
-                        )},
-                    }
+        def record_bundle_sanitization(result):
+            nonlocal sanitization_summary
+            sanitization_summary = _record_sanitization_stage(
+                sanitization_summary, "evidence_bundle", result)
+            if result is not None and result.changed:
+                print(f"::notice::PII-Shield redacted {result.redaction_count} match(es) in evidence bundle")
+            return sanitization_summary
 
-        # The bundle was mutated after create_bundle stamped it (sanitization +
-        # optional PII redaction above); re-seal so bundle_hash matches the FINAL
-        # saved bytes -- and RE-SIGN with the same key so a signed artifact stays
-        # signed (seal_bundle refuses to silently drop a signature).
-        generator.seal_bundle(bundle, attestation_key=attestation_key, attestation_key_id=attestation_key_id)
+        sanitize_bundle = pii_shield_enabled and pii_shield_sanitize_bundle
+        try:
+            bundle = generator.create_bundle(
+                pr=pr, analysis=analysis, risk_result=risk_result,
+                repository=github_repository, commit_sha=github_sha,
+                attestation_key=attestation_key, attestation_key_id=attestation_key_id,
+                id_nonce=bundle_id_nonce,
+                governance=build_governance_record(classifier, rubric_input=rubric),
+                sanitize_draft=sanitize_bundle_draft if sanitize_bundle else None,
+                record_sanitization=record_bundle_sanitization if sanitize_bundle else None,
+            )
+        except InvalidBundleDraft as exc:
+            message = exc.args[0] if len(exc.args) == 1 and type(exc.args[0]) is str else ''
+            reason = {'Invalid producer bundle draft': 'producer_input',
+                      'Invalid sanitized bundle accounting': 'accounting',
+                      'Invalid sanitized bundle draft': 'structure_identity'}.get(message, 'invalid_draft')
+            print(f'::error::Evidence bundle rejected ({reason}); processing stopped')
+            sys.exit(1)
 
         # Save bundle
         bundle_dir.mkdir(parents=True, exist_ok=True)

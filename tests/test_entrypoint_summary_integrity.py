@@ -38,8 +38,9 @@ def test_saved_signed_bundle_has_current_summary_and_immutable_history(tmp_path,
     result = client.sanitize_diff.return_value
     calls = []
 
-    def sanitize(document, purpose):
+    def sanitize(document, purpose, **options):
         assert purpose == 'evidence_bundle'
+        assert options == {'preserve_hash_fields': False}
         calls.append(purpose)
         # The unchanged adapter returns the same object, not a deep copy.
         output = json.loads(json.dumps(document, default=str)) if changed else document

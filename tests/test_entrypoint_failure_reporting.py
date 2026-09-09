@@ -101,7 +101,7 @@ def test_main_failure_reporting_and_publication(tmp_path, capsys, stage, outcome
 
     client.sanitize_diff.side_effect = lambda text: scan(text, 'ai_prompt')
     client.sanitize_text.side_effect = lambda text, **kw: scan(text, kw['purpose'])
-    client.sanitize_json_document.side_effect = lambda document, purpose: (
+    client.sanitize_json_document.side_effect = lambda document, purpose, **options: (
         document, scan(json.dumps(document, default=str), purpose),
     )
     event = tmp_path / 'event.json'
