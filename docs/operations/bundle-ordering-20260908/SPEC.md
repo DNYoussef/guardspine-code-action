@@ -17,6 +17,13 @@ enum and its derived nonnegative signal_count. User numeric content remains scan
 User keys in free-form content are additionally presented as string values because
 the real engine otherwise leaves JSON keys unscanned. A changed key is refused,
 not renamed or restored. No blanket exemption for benign-looking dynamic keys.
+Key classification is separate from value protection: fixed analyzer schema names
+at their exact review/consensus/coverage/score-map positions need not be presented
+as customer text. Existing exact protected dictionary-member paths also identify
+fixed schema names. Always traverse their values. Unknown siblings, descendants,
+skipped-pack keys and signer IDs remain scanned; classify each occurrence before
+deduplication. List-element schema applies only to actual integer list positions,
+never arbitrary dictionary keys that resemble indices. No whole-subtree exemption.
 
 Compare exact recursive shape/types and non-string values (including signed zero)
 before producing any proof. The finite protected string inventory is:
@@ -81,3 +88,21 @@ existing reporting/producer regressions and named historical consent xfail recor
 separately, never counted as passing. Exact Git-byte pins and full-tree immutable
 snapshot, non-author Opus HIGH/Gemini HIGH inspections and independently confined
 Linux execution are required before acceptance. No claim of A2/A-B completion.
+
+Schema compatibility acceptance additionally uses actual normal, deliberation,
+failed and disabled analyzer packing, the source-derived intent/risk enum matrix,
+real PII-value controls, same-name keys in unknown nested dictionaries, private
+key names, and schema deletion/rename refusals before proofs. Known schema names
+must not create exemptions for arbitrary user values or arbitrary user keys.
+
+R7 closes R6 review findings F1/F2; R6 is not accepted. Keep its frozen reviews.
+Use one complete fixed-key inventory at exact analyzer dictionary paths, with
+only actual list indices normalized to the int sentinel. At mapped nodes this
+inventory alone governs key exclusion; protected identity values remain separate.
+Derive exact path domains and key unions from real successful, failed,
+deliberation, no-provider and AI-disabled producers, including provider metadata
+and post-raw_response removal. Directly assert callback labels exclude schema
+keys and include the same names at unknown positions. Added/removed key and
+path controls must falsify the drift oracle. No global name exemptions.
+R7 is one corrective build and inspection round following the recorded RCA;
+unresolved material findings require the standing architectural escalation.

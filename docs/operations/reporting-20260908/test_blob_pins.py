@@ -8,7 +8,7 @@ from check_blob_pins import verify
 class BlobPinControls(unittest.TestCase):
     def test_valid_and_invalid_maps(self):
         content = b'canonical\nbytes\n'
-        blobs = {str(i): content for i in range(26)}
+        blobs = {str(i): content for i in range(27)}
         expected = {path: hashlib.sha256(data).hexdigest() for path, data in blobs.items()}
         verify(expected, blobs.__getitem__)
         bad = dict(expected, **{'0': '0' * 64})
@@ -18,9 +18,9 @@ class BlobPinControls(unittest.TestCase):
             verify(expected, lambda path: blobs[path].replace(b'\n', b'\r\n'))
         with self.assertRaisesRegex(ValueError, 'Invalid pin entry'):
             verify(dict(expected, **{'0': 'a' * 63}), blobs.__getitem__)
-        with self.assertRaisesRegex(ValueError, 'exactly 26'):
+        with self.assertRaisesRegex(ValueError, 'exactly 27'):
             verify({}, blobs.__getitem__)
-        with self.assertRaisesRegex(ValueError, 'exactly 26'):
+        with self.assertRaisesRegex(ValueError, 'exactly 27'):
             verify(dict(expected, extra='a' * 64), blobs.__getitem__)
         missing = dict(expected)
         missing['missing'] = missing.pop('16')

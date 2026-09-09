@@ -609,3 +609,189 @@ def test_malformed_governance_has_fixed_failure(governance):
     args['governance'] = governance
     with pytest.raises(InvalidBundleDraft, match='^Invalid producer bundle draft$'):
         BundleGenerator().create_bundle(**args, sanitize_draft=lambda draft: (draft, None))
+
+
+def produced_review_args(shape='normal', intent='feature', risk='comment'):
+    from src.analyzer import (DiffAnalyzer, AI_REVIEW_RUBRIC_SCORE_KEYS,
+                              AI_REVIEW_ENVELOPE_KEY, AI_REVIEW_SCHEMA_VERSION)
+    analyzer = object.__new__(DiffAnalyzer)
+    analyzer.max_models_available = 0 if shape == 'disabled' else 1
+    analyzer.models = [('openai', 'gpt-4o')]
+    analyzer.ai_enabled = shape != 'ai_disabled'
+    payload = {'schema_version': AI_REVIEW_SCHEMA_VERSION,
+              'summary': 'contact ' + SECRET, 'intent': intent,
+              'concerns': ['contact ' + SECRET], 'risk_assessment': risk,
+              'confidence': 0.8, 'rubric_scores': dict.fromkeys(AI_REVIEW_RUBRIC_SCORE_KEYS, 3)}
+    with patch.object(analyzer, '_call_provider', return_value=(
+            json.dumps({AI_REVIEW_ENVELOPE_KEY: payload}), {'model_id': 'gpt-4o'})):
+        review = analyzer._get_model_review('openai', 'gpt-4o', '', [], 'default', True)
+    assert review['intent'] == intent and not review.get('error')
+    if shape == 'failed':
+        review = analyzer._fail_closed_review('contact ' + SECRET,
+            provider='openai', model_name='gpt-4o', error='InvalidReviewResponse',
+            parse_error=True, schema_error=True)
+    with patch.object(analyzer, '_parallel_review', return_value=[review]) as provider, \
+         patch.object(analyzer, '_parallel_crosscheck', return_value=[review]):
+        analysis = analyzer.analyze('', tier_override='L2', deliberate=shape == 'deliberation')
+    assert provider.call_count == (0 if shape in ('disabled', 'ai_disabled') else 1)
+    args = inputs()
+    args['analysis'] = vars(analysis)
+    return args
+
+
+def producer_schema_inventory():
+    """Union actual producer dictionary keys, independent of exemption paths."""
+    combined = {}
+    for shape in ('normal', 'deliberation', 'failed', 'disabled', 'ai_disabled'):
+        analysis = produced_review_args(shape)['analysis']
+        roots = {'multi_model_review': BundleGenerator._redact_review(analysis['multi_model_review']),
+                 'ai_summary': analysis.get('ai_summary') or {},
+                 'review_coverage': analysis.get('review_coverage') or {}}
+        pending = [(('analysis_snapshot', name), value) for name, value in roots.items()]
+        while pending:
+            path, value = pending.pop()
+            if isinstance(value, dict):
+                combined.setdefault(path, set()).update(value)
+                pending.extend(((*path, key), child) for key, child in value.items())
+            elif isinstance(value, list):
+                pending.extend(((*path, int), child) for child in value)
+    return combined
+
+
+@pytest.mark.parametrize('mutation', [None, 'removed_key', 'stale_key',
+                                      'stale_path', 'removed_path', 'producer_removed'])
+def test_schema_inventory_matches_actual_producers(mutation):
+    from src.bundle_generator import _ANALYZER_SCHEMA_KEYS
+    actual = {path: set(keys) for path, keys in _ANALYZER_SCHEMA_KEYS.items()}
+    expected = producer_schema_inventory()
+    path = ('analysis_snapshot', 'multi_model_review')
+    if mutation == 'removed_key':
+        actual[path].remove('models_used')
+    elif mutation == 'stale_key':
+        actual[path].add('obsolete_field')
+    elif mutation == 'stale_path':
+        actual[(*path, 'obsolete')] = {'summary'}
+    elif mutation == 'removed_path':
+        actual.pop(path)
+    elif mutation == 'producer_removed':
+        expected[path].remove('models_used')
+    with pytest.raises(AssertionError) if mutation else nullcontext():
+        assert actual == expected
+
+
+@pytest.mark.parametrize('shape', ['normal', 'deliberation', 'failed', 'disabled', 'ai_disabled'])
+def test_schema_labels_are_excluded_only_at_their_producer_positions(shape):
+    schema_names = set().union(*producer_schema_inventory().values())
+    args = produced_review_args(shape)
+    captured = []
+    def capture(draft):
+        captured.append(set(draft['_labels']))
+        return draft, None
+    BundleGenerator().create_bundle(**args, sanitize_draft=capture)
+    assert captured.pop().isdisjoint(schema_names)
+    args['analysis']['multi_model_review']['extension'] = dict.fromkeys(schema_names, 'ordinary')
+    BundleGenerator().create_bundle(**args, sanitize_draft=capture)
+    assert schema_names <= captured.pop()
+
+
+def test_removed_identity_schema_key_cannot_hide_behind_value_protection(monkeypatch):
+    from src.bundle_generator import _ANALYZER_SCHEMA_KEYS
+    path = ('analysis_snapshot', 'multi_model_review', 'reviews', int)
+    monkeypatch.setitem(_ANALYZER_SCHEMA_KEYS, path, _ANALYZER_SCHEMA_KEYS[path] - {'model_name'})
+    captured = []
+    def capture(draft):
+        captured.append(set(draft['_labels']))
+        return draft, None
+    BundleGenerator().create_bundle(**produced_review_args(), sanitize_draft=capture)
+    # Positive control: the same exclusion oracle must reject this real mutant.
+    with pytest.raises(AssertionError):
+        assert captured.pop().isdisjoint({'model_name'})
+
+
+@pytest.mark.parametrize('shape', ['normal', 'deliberation', 'failed', 'disabled', 'ai_disabled'])
+def test_actual_analyzer_shapes_survive_real_engine(shape):
+    args = produced_review_args(shape)
+    client = PIIShieldClient(enabled=True, fail_closed=True)
+    _, pem, fingerprint = _gen_key()
+    bundle = BundleGenerator().create_bundle(**args, attestation_key=pem,
+        sanitize_draft=lambda draft: client.sanitize_json_document(draft, preserve_hash_fields=False))
+    before = args['analysis']['multi_model_review']
+    after = bundle['analysis_snapshot']['multi_model_review']
+    assert after['models_used'] == before['models_used']
+    if before.get('consensus'):
+        assert after['consensus']['consensus_risk'] == before['consensus']['consensus_risk']
+    for source, output in zip(before['reviews'], after['reviews']):
+        assert output['risk_assessment'] == source['risk_assessment']
+        assert output['intent'] == source['intent']
+        assert '[HIDDEN' in output['summary']
+    assert_no_secret(bundle)
+    assert_proofs(bundle, fingerprint)
+
+
+def test_all_review_classifications_survive_real_engine():
+    from src.analyzer import AI_REVIEW_INTENTS, AI_REVIEW_RISK_ASSESSMENTS
+    client = PIIShieldClient(enabled=True, fail_closed=True)
+    for intent in sorted(AI_REVIEW_INTENTS):
+        for risk in sorted(AI_REVIEW_RISK_ASSESSMENTS):
+            args = produced_review_args(intent=intent, risk=risk)
+            bundle = BundleGenerator().create_bundle(**args,
+                sanitize_draft=lambda draft: client.sanitize_json_document(draft, preserve_hash_fields=False))
+            mmr = bundle['analysis_snapshot']['multi_model_review']
+            assert mmr['rubric_name'] == 'default'
+            assert mmr['reviews'][0]['intent'] == intent
+            assert mmr['reviews'][0]['risk_assessment'] == risk
+            assert mmr['consensus']['consensus_risk'] == risk
+            assert bundle['analysis_snapshot']['ai_summary']['intent'] == intent
+            assert_no_secret(bundle)
+            assert verify_bundle_chain(bundle)[0]
+
+
+@pytest.mark.parametrize('parent', ['extension', 'concerns', 'string_index'])
+@pytest.mark.parametrize('key', ['rubric_name', SECRET])
+def test_schema_lookalikes_and_private_keys_still_refuse(parent, key):
+    args = produced_review_args()
+    mmr = args['analysis']['multi_model_review']
+    if parent == 'extension':
+        mmr['extension'] = {key: 'ordinary'}
+    elif parent == 'concerns':
+        mmr['reviews'][0]['concerns'] = [{key: 'ordinary'}]
+    else:
+        mmr['reviews'][0]['rubric_scores'] = {'0': {key: 'ordinary'}}
+    def scan(draft):
+        assert key in draft['_labels']
+        draft['_labels'] = [label.replace(key, '[HIDDEN:test]') for label in draft['_labels']]
+        return draft, None
+    generator = BundleGenerator()
+    with patch.object(generator, 'seal_bundle') as seal:
+        with pytest.raises(InvalidBundleDraft, match='^Invalid sanitized bundle draft$'):
+            generator.create_bundle(**args, sanitize_draft=scan)
+    seal.assert_not_called()
+
+
+@pytest.mark.parametrize('change', ['delete', 'rename'])
+def test_schema_key_changes_refuse_before_proofs(change):
+    args = produced_review_args()
+    def scan(draft):
+        mmr = draft['analysis_snapshot']['multi_model_review']
+        value = mmr.pop('rubric_name')
+        if change == 'rename':
+            mmr['other'] = value
+        return draft, None
+    generator = BundleGenerator()
+    with patch.object(generator, 'seal_bundle') as seal:
+        with pytest.raises(InvalidBundleDraft, match='^Invalid sanitized bundle draft$'):
+            generator.create_bundle(**args, sanitize_draft=scan)
+    seal.assert_not_called()
+
+
+@pytest.mark.parametrize('identity', ['review-model', SECRET])
+def test_schema_key_exclusion_never_exempts_model_identity(identity):
+    args = produced_review_args()
+    args['analysis']['multi_model_review']['reviews'][0]['model_name'] = identity
+    client = PIIShieldClient(enabled=True, fail_closed=True)
+    generator = BundleGenerator()
+    with patch.object(generator, 'seal_bundle') as seal:
+        with pytest.raises(InvalidBundleDraft, match='^Invalid sanitized bundle draft$'):
+            generator.create_bundle(**args, sanitize_draft=lambda draft:
+                client.sanitize_json_document(draft, preserve_hash_fields=False))
+    seal.assert_not_called()

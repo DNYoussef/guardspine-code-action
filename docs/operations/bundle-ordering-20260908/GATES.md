@@ -11,7 +11,7 @@ test deletion are pinned by G3/G5. Neither standalone suite proves snapshot iden
 The selected pins are not a transitive dependency manifest. G4/G5 additionally
 require reconciliation of the complete reviewed Git tree with the executed SHA.
 
-- [ ] G1: real redaction preserves signed bundle integrity and rejects structural corruption
+- [ ] G1: real redaction preserves signed bundle integrity, actual analyzer shapes and unknown-key coverage while rejecting structural corruption; exact producer schema drift and direct label controls reject known-bad mutations
   CHECK: python -B docs/operations/bundle-ordering-20260908/verify_bundle_ordering.py
   EXPECT: BUNDLE_ORDERING_VERIFIED
   EVIDENCE: pending

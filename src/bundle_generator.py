@@ -32,6 +32,31 @@ except ImportError:  # pragma: no cover - fallback for direct module imports in 
     from canonical_json import canonical_json_dumps, canonicalize_for_json
 
 
+# Fixed key names, not value exemptions. Only actual list indices match int.
+# Tests compare this complete inventory with the actual analyzer producers.
+_REVIEW_PATH = ('analysis_snapshot', 'multi_model_review')
+_SCORE_KEYS = frozenset(('security_impact', 'code_quality', 'test_coverage',
+                         'documentation', 'rollback_safety'))
+_COVERAGE_KEYS = frozenset(('attempted', 'succeeded', 'failed', 'complete', 'failures'))
+_ANALYZER_SCHEMA_KEYS = {
+    _REVIEW_PATH: frozenset(('reviews', 'models_used', 'models_failed', 'models_requested',
+        'model_errors', 'review_coverage', 'used_rubric', 'rubric_name', 'consensus',
+        'deliberation_rounds', 'early_exit', 'tier', 'reason')),
+    (*_REVIEW_PATH, 'consensus'): frozenset(('agreement_score', 'combined_concerns',
+        'consensus_risk', 'dissenting_opinions', 'rubric_summary', 'models_agreed', 'total_models')),
+    (*_REVIEW_PATH, 'consensus', 'rubric_summary'): _SCORE_KEYS,
+    (*_REVIEW_PATH, 'reviews', int): frozenset(('summary', 'concerns', 'confidence',
+        'rubric_scores', 'error', 'parse_error', 'schema_error', 'model_name', 'model_id',
+        'provider', 'risk_assessment', 'intent', 'prompt_hash', 'response_hash')),
+    (*_REVIEW_PATH, 'reviews', int, 'rubric_scores'): _SCORE_KEYS,
+    ('analysis_snapshot', 'ai_summary'): frozenset(('summary', 'intent', 'concerns')),
+    ('analysis_snapshot', 'review_coverage'): _COVERAGE_KEYS,
+    (*_REVIEW_PATH, 'review_coverage'): _COVERAGE_KEYS,
+    ('analysis_snapshot', 'review_coverage', 'failures', int): frozenset(('provider', 'error_type')),
+    (*_REVIEW_PATH, 'review_coverage', 'failures', int): frozenset(('provider', 'error_type')),
+}
+
+
 class InvalidBundleDraft(ValueError):
     """The sanitizer cannot change evidence structure or protected facts."""
 
@@ -477,23 +502,29 @@ class BundleGenerator:
                         # to_metadata derives this count from signal inventory;
                         # it is not a customer numeric cell or free-form finding.
                         take(path, ['signal_count'])
-            # JSON redaction scans values, not object keys. Present user-subtree
-            # keys as values too; changed keys refuse rather than rewriting schema.
-            pending = [original['summary']['risk_drivers'], original['summary']['findings'],
-                       original['events'][2]['data']['scores']]
             snapshot = original['analysis_snapshot']
-            pending.extend(snapshot[key] for key in ('sensitive_zones', 'ai_summary',
-                           'multi_model_review', 'model_errors', 'review_coverage') if key in snapshot)
+            # JSON redaction scans values, not object keys. Unknown keys remain
+            # customer text even when they match a schema name somewhere else.
+            pending = [(('summary', key), original['summary'][key])
+                       for key in ('risk_drivers', 'findings')]
+            pending.append((('events', 2, 'data', 'scores'), original['events'][2]['data']['scores']))
+            pending.extend((('analysis_snapshot', key), snapshot[key]) for key in (
+                'sensitive_zones', 'ai_summary', 'multi_model_review', 'model_errors',
+                'review_coverage') if key in snapshot)
             if 'governance' in original:
-                pending.append(original['governance'].get('skipped_packs', {}))
+                pending.append((('governance', 'skipped_packs'), original['governance'].get('skipped_packs', {})))
             keys = []
             while pending:
-                value = pending.pop()
+                path, value = pending.pop()
                 if isinstance(value, dict):
-                    keys.extend(value)
-                    pending.extend(value.values())
+                    schema = _ANALYZER_SCHEMA_KEYS.get(tuple(
+                        int if type(part) is int else part for part in path))
+                    keys.extend(key for key in value if (
+                        key not in schema if schema is not None
+                        else (*path, key) not in protected_paths))
+                    pending.extend(((*path, key), child) for key, child in value.items())
                 elif isinstance(value, list):
-                    pending.extend(value)
+                    pending.extend(((*path, i), child) for i, child in enumerate(value))
             keys = list(dict.fromkeys(keys))
             if attestation_key_id is not None:
                 keys.append(attestation_key_id)

@@ -10,8 +10,8 @@ VERIFIER = 'docs/operations/fatal-result-20260908/verify_linux.py'
 
 
 def verify(expected, read_blob):
-    if not isinstance(expected, dict) or len(expected) != 26:
-        raise ValueError('Expected exactly 26 reviewed pins')
+    if not isinstance(expected, dict) or len(expected) != 27:
+        raise ValueError('Expected exactly 27 reviewed pins')
     for path, digest in expected.items():
         if not isinstance(path, str) or not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
             raise ValueError('Invalid pin entry')
