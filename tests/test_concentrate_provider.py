@@ -920,3 +920,49 @@ def test_concentrate_headers_without_ambient_config(monkeypatch):
     assert req.headers["content-type"] == "application/json"
     assert int(req.headers["content-length"]) == len(req.content)
     assert json.loads(req.content)["model"] == PINNED
+
+
+@pytest.mark.parametrize("ambient", ["Content-Type: multipart/form-data",
+                                     "content-type: multipart/form-data; boundary=x"])
+def test_ambient_content_type_cannot_change_the_body_encoding(monkeypatch, ambient):
+    """The SDK picks the body encoding from Content-Type before any request hook runs."""
+    monkeypatch.setenv("OPENAI_CUSTOM_HEADERS", ambient)
+    gw = Gateway("ok")
+    _analyzer(gw)._call_concentrate("prompt", PINNED)
+    req = gw.requests[0]
+    assert req.headers["content-type"] == "application/json"
+    body = json.loads(req.content)
+    assert body["model"] == PINNED and body["messages"][0]["content"] == "prompt"
+
+
+# ------------------------------- identity reported on an HTTP error (Astra r2)
+
+def _gateway_error_with_model(model):
+    def gateway(request):
+        return httpx.Response(500, json={"model": model, "error": {"message": ERROR_SENTINEL}},
+                              headers={"x-concentrate-cost": "0.0005"})
+    return gateway
+
+
+def test_http_error_keeps_the_reported_identity_on_both_paths():
+    a = _analyzer(_gateway_error_with_model(OTHER))
+    review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+    prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+    (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    for r in (review, cross):
+        assert r.get("error") and r["model_id"] == OTHER and r["serving_host"] == "not exposed"
+        assert ERROR_SENTINEL not in json.dumps(r, default=str)
+
+
+def test_http_error_identity_is_sealed_without_the_error_body():
+    sealed, snapshot = _bundle_for(_gateway_error_with_model(OTHER))
+    (entry,) = sealed
+    assert entry["model_id"] == OTHER and entry["failed"] is True
+    assert snapshot[0]["model_id"] == OTHER
+    assert ERROR_SENTINEL not in json.dumps([sealed, snapshot], default=str)
+
+
+def test_http_error_identity_is_redacted_if_it_echoes_the_key():
+    a = _analyzer(_gateway_error_with_model(f"x{KEY}x"))
+    review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+    assert KEY not in review["model_id"] and "[REDACTED_KEY]" in review["model_id"]

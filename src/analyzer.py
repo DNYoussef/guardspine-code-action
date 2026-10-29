@@ -1102,6 +1102,7 @@ class DiffAnalyzer:
                     reviews[idx] = self._note_attempt(
                         self._with_serving_host(parsed, provider, meta), provider, round_num)
                 except Exception as e:
+                    meta = meta or getattr(e, "concentrate_meta", {})
                     reviews[idx] = self._note_attempt(self._with_serving_host(self._fail_closed_review(
                         "Provider review failed",
                         model_name=model,
@@ -1302,6 +1303,7 @@ Respond only through the required structured verdict schema:
             return self._note_attempt(self._with_serving_host(parsed, provider, meta), provider, 1)
 
         except Exception as e:
+            meta = meta or getattr(e, "concentrate_meta", {})
             return self._note_attempt(self._with_serving_host(self._fail_closed_review(
                 "Provider review failed",
                 model_name=model,
@@ -1858,6 +1860,31 @@ Respond ONLY with the structured object above."""
             return {k: self._redact_parsed(v) for k, v in value.items()}
         return value
 
+    def _ambient_header_mask(self) -> dict:
+        """Override every header OPENAI_CUSTOM_HEADERS would add, parsed the way the
+        SDK parses it, so ambient config cannot shape the body the SDK serialises (a
+        multipart Content-Type would otherwise re-encode it before any hook runs).
+        Authorization is re-set to our key, since omitting it fails the SDK's auth check."""
+        import openai
+
+        mask = {}
+        for line in os.environ.get("OPENAI_CUSTOM_HEADERS", "").split("\n"):
+            colon = line.find(":")
+            if colon >= 0:
+                name = line[:colon].strip()
+                mask[name] = (f"Bearer {self.concentrate_key}" if name.lower() == "authorization"
+                              else openai.Omit())
+        return mask
+
+    def _reported_model(self, http_response) -> str:
+        """The model a Concentrate response body reports, redacted; NOT_REPORTED if none."""
+        try:
+            body = http_response.json()
+            reported = body.get("model") if isinstance(body, dict) else None
+        except Exception:
+            reported = None
+        return self._redact_key(reported) if isinstance(reported, str) and reported else NOT_REPORTED
+
     def _pin_concentrate_headers(self, request) -> None:
         """Rebuild the outgoing headers so ambient SDK config can neither replace
         the Concentrate key nor ride along to the gateway. Done per client, not by
@@ -1887,7 +1914,8 @@ Respond ONLY with the structured object above."""
                             event_hooks={"request": [self._pin_concentrate_headers]})
         try:
             client = openai.OpenAI(api_key=self.concentrate_key, base_url=CONCENTRATE_BASE_URL,
-                                   http_client=http, max_retries=0)
+                                   http_client=http, max_retries=0,
+                                   default_headers=self._ambient_header_mask())
             try:
                 raw = client.chat.completions.with_raw_response.create(
                     model=model,
@@ -1897,6 +1925,9 @@ Respond ONLY with the structured object above."""
                 )
             except openai.APIStatusError as e:
                 self._record_concentrate_cost(e.response.headers.get("x-concentrate-cost"))
+                # The error body is never kept; only the model it reports, redacted.
+                e.concentrate_meta = {"model_id": self._reported_model(e.response),
+                                      "serving_host": NOT_EXPOSED}
                 raise
             except Exception:
                 self._record_concentrate_cost(None)  # charge, if any, is unknown
@@ -1904,13 +1935,7 @@ Respond ONLY with the structured object above."""
             self._record_concentrate_cost(raw.headers.get("x-concentrate-cost"))
             # Read the reported model from the raw body first, so no malformed
             # completion envelope can erase an identity the gateway did send.
-            try:
-                body = raw.http_response.json()
-                reported = body.get("model") if isinstance(body, dict) else None
-            except Exception:
-                reported = None
-            meta = {"model_id": self._redact_key(reported) if isinstance(reported, str) and reported
-                    else NOT_REPORTED,
+            meta = {"model_id": self._reported_model(raw.http_response),
                     "serving_host": NOT_EXPOSED}
             try:
                 response = raw.parse()
