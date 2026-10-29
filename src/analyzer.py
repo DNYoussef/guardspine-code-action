@@ -642,7 +642,7 @@ class DiffAnalyzer:
         try:
             patch = PatchSet(diff_content)
         except Exception as e:
-            return self._fallback_analysis(diff_content)
+            return self._attach_skipped(self._fallback_analysis(diff_content))
 
         files = []
         total_added = 0
@@ -796,6 +796,10 @@ class DiffAnalyzer:
                 )
             if self.models_skipped:
                 multi_review["models_skipped"] = list(self.models_skipped)
+                coverage = dict(multi_review.get("review_coverage") or {})
+                coverage["skipped"] = len(self.models_skipped)
+                coverage["complete"] = False
+                multi_review["review_coverage"] = coverage
             if any(p == "concentrate" for p, _ in self.models):
                 multi_review["concentrate_cost"] = self._concentrate_cost_summary()
             result.multi_model_review = multi_review
@@ -825,8 +829,7 @@ class DiffAnalyzer:
                 "tier": preliminary_tier,
                 "reason": "L0 tier - rules-based only" if preliminary_tier == "L0" else "No AI providers configured"
             }
-            if self.models_skipped:
-                result.multi_model_review["models_skipped"] = list(self.models_skipped)
+            self._attach_skipped(result)
             result.models_used = 0
             result.consensus_risk = ""
             result.agreement_score = 0.0
@@ -1023,6 +1026,7 @@ class DiffAnalyzer:
                         model_name=model,
                         provider=provider,
                         error=type(e).__name__,
+                        **({"model_id": NOT_REPORTED} if provider == "concentrate" else {}),
                     )
         return [r for r in reviews if r is not None]
 
@@ -1142,6 +1146,18 @@ Respond only through the required structured verdict schema:
             return False
         avg_conf = sum(r.get("confidence", 0) for r in valid) / len(valid)
         return avg_conf >= 0.85
+
+    def _attach_skipped(self, result):
+        """Record configured-but-skipped models on a result that ran no AI review."""
+        if self.models_skipped:
+            mmr = dict(result.multi_model_review or {})
+            mmr["models_skipped"] = list(self.models_skipped)
+            result.multi_model_review = mmr
+            result.review_coverage = {
+                "attempted": 0, "succeeded": 0, "failed": 0, "complete": False,
+                "failures": [], "skipped": len(self.models_skipped),
+            }
+        return result
 
     @staticmethod
     def _unreported_model_id(provider: str, model: str) -> str:
@@ -1779,9 +1795,12 @@ Respond ONLY with the structured object above."""
                 raise
             self._record_concentrate_cost(raw.headers.get("x-concentrate-cost"))
             response = raw.parse()
-            text = response.choices[0].message.content
             reported = getattr(response, "model", None) or NOT_REPORTED
-            return text, {"model_id": reported}
+            choice = response.choices[0] if response.choices else None
+            text = choice.message.content if choice is not None and choice.message is not None else None
+            # Null or missing content is a failed review, not a lost identity: the
+            # strict parser rejects "" fail-closed and the reported model is kept.
+            return (text if isinstance(text, str) else ""), {"model_id": reported}
         finally:
             http.close()
 

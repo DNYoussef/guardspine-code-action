@@ -131,3 +131,28 @@ def test_every_request_of_a_full_sample_goes_to_concentrate(tmp_path):
         assert req.url.host == "api.concentrate.ai"
         assert req.headers["authorization"] == f"Bearer {CN_KEY}"
         assert "concentrate/" + json.loads(req.content)["model"] in SPECS
+
+
+@pytest.mark.parametrize("bad", [
+    ["concentrate/moonshot/kimi-k3"],
+    ["concentrate/kimi-k3"],
+    ["concentrate/deepinfra/mimo-v2.6-pro", "concentrate/zai/glm-5.3"],
+    ["deepinfra/mimo-v2.6-pro"],
+    [],
+])
+def test_invalid_specs_are_rejected_before_any_request(bad):
+    fake = FakeUrlopen(b"{}")
+    with patch.object(run_eval, "_open_no_redirect", fake), patch.object(urllib.request, "urlopen", fake):
+        assert run_eval._preflight_api_key(CN_KEY, "L2", provider="concentrate", models=bad) is False
+    assert fake.urls == []
+
+
+def test_eval_result_records_skipped_models(tmp_path):
+    sample = tmp_path / "clean" / "ok.patch"
+    sample.parent.mkdir()
+    sample.write_text(chr(10).join(["diff --git a/a.py b/a.py", "--- a/a.py", "+++ b/a.py",
+                                     "@@ -1 +1 @@", "-x = 1", "+x = 2", ""]), encoding="utf-8")
+    a = run_eval.make_analyzer("", "L2", provider="concentrate", models=SPECS)
+    r = run_eval.run_sample(sample, "hand-crafted", a, run_eval.RiskClassifier(rubric="default"),
+                            run_eval.DecisionEngine(policy="standard"), forced_tier="L2")
+    assert r.models_skipped == 2

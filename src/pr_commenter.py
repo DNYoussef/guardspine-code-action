@@ -244,9 +244,13 @@ class PRCommenter:
     def _coverage_note(review_coverage: dict | None) -> str:
         if not review_coverage or review_coverage.get("complete", True):
             return ""
-        return ("**Model review coverage incomplete:** "
+        note = ("**Model review coverage incomplete:** "
                 f"{review_coverage.get('succeeded', 0)} of "
                 f"{review_coverage.get('attempted', 0)} models reviewed")
+        skipped = review_coverage.get("skipped")
+        if skipped:
+            note += f"; {skipped} configured model(s) skipped (no provider key in this run)"
+        return note
 
     def post_decision_card(
         self, decision_card_md: str, review_coverage: dict | None = None

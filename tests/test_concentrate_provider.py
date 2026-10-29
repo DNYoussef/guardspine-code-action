@@ -293,51 +293,23 @@ def test_deliberation_rounds_are_all_charged():
     assert cost["total_usd"] == pytest.approx(0.009)
 
 
-# --------------------------------------------------------------- G9 leakage
+# --------------------------------------------- G4 / G12a / G9 through the real entrypoint
+#
+# The entrypoint runs for real with the real DiffAnalyzer; only GitHub, the PR
+# diff fetch and the rubric classifier are stubbed, and the Concentrate
+# transport is a MockTransport. Comments, SARIF and the evidence bundle are
+# produced by the production renderers and read back from where they land.
 
-def test_key_and_gateway_error_body_reach_no_sink():
-    from src.bundle_generator import BundleGenerator
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        a = _analyzer(Gateway("500"))
-        result = a.analyze(DIFF, tier_override="L1")
-        pr = _pr()
-        bundle = BundleGenerator().create_bundle(pr=pr, analysis=result, risk_result={
-            "risk_tier": "L1", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "r"},
-            repository="o/r", commit_sha="abc1234")
-    sinks = out.getvalue() + err.getvalue() + json.dumps(dict(result.items()), default=str) + json.dumps(bundle, default=str)
-    assert KEY not in sinks
-    assert ERROR_SENTINEL not in sinks
+FORK_EVENT = {"pull_request": {"number": 7, "head": {"repo": {"fork": True, "full_name": "someone/r"}}},
+              "sender": {"login": "outsider"}}
+DEPENDABOT_EVENT = {"pull_request": {"number": 7, "head": {"repo": {"fork": False, "full_name": "o/r"}}},
+                    "sender": {"login": "dependabot[bot]"}}
+TRUSTED_EVENT = {"pull_request": {"number": 7, "head": {"repo": {"fork": False, "full_name": "o/r"}}},
+                 "sender": {"login": "maintainer"}}
 
 
-def test_leak_check_can_see_a_planted_leak():
-    # Positive control: the same sinks DO show a value we deliberately print.
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        print(KEY)
-    assert KEY in out.getvalue()
-
-
-# ------------------------------------------------- entrypoint wiring (G4/G12a)
-
-def _run_entrypoint(extra_env):
+def _run_real_entrypoint(event, gateway, extra_env=None, finding_message="Builds SQL with string formatting"):
     from entrypoint import main
-
-    captured = {}
-
-    class CaptureAnalyzer(DiffAnalyzer):
-        def __init__(self, *args, **kwargs):
-            captured["kwargs"] = kwargs
-            super().__init__(*args, **kwargs)
-            self._concentrate_transport = httpx.MockTransport(lambda r: (_ for _ in ()).throw(
-                AssertionError("no request expected in this wiring test")))
-
-        def analyze(self, *args, **kwargs):
-            captured["analyzer"] = self
-            return {"files_changed": 1, "lines_added": 1, "lines_removed": 0, "files": [],
-                    "sensitive_zones": [], "diff_hash": "sha256:x", "models_used": 0,
-                    "consensus_risk": "", "agreement_score": 0.0,
-                    "multi_model_review": {"models_skipped": self.models_skipped}}
 
     class StubClassifier:
         @staticmethod
@@ -353,6 +325,12 @@ def _run_entrypoint(extra_env):
         def builtin_names(_repo_root):
             return {"default"}
 
+        # Fields the governance record in the bundle reads.
+        requested_config_packs = []
+        loaded_config_packs = []
+        skipped_config_packs = {}
+        fallback_applied = False
+
         def __init__(self, *args, **kwargs):
             pass
 
@@ -360,50 +338,160 @@ def _run_entrypoint(extra_env):
             return []
 
         def classify(self, analysis):
-            return {"risk_tier": "L0", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "ok"}
+            return {"risk_tier": "L2", "risk_drivers": [], "scores": {}, "rationale": "r",
+                    "findings": [{"severity": "high", "zone": "database", "file": "app/users.py",
+                                  "line": 1, "message": finding_message, "rule_id": "sql-format"}]}
 
-    packet = MagicMock(decision="merge", hard_blocks=[], conditions=[], advisory=[])
+    analyzers = []
+
+    class TransportAnalyzer(DiffAnalyzer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._concentrate_transport = httpx.MockTransport(gateway)
+            analyzers.append(self)
+
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
         ev = ws / "event.json"
-        ev.write_text(json.dumps({"pull_request": {"number": 7}}), encoding="utf-8")
+        ev.write_text(json.dumps(event), encoding="utf-8")
         pr = MagicMock(number=7, title="t", state="open", mergeable=True)
+        pr.html_url = "https://github.com/o/r/pull/7"
+        pr.user.login = "u"
+        pr.base.sha = "basesha"
+        pr.head.sha = "headsha"
+        pr.get_issue_comments.return_value = []
         repo = MagicMock()
         repo.get_pull.return_value = pr
         gh = MagicMock()
         gh.get_repo.return_value = repo
         env = {"GITHUB_WORKSPACE": str(ws), "GITHUB_EVENT_PATH": str(ev), "GITHUB_REPOSITORY": "o/r",
                "GITHUB_SHA": "abc1234", "GITHUB_REF": "refs/pull/7/head", "INPUT_GITHUB_TOKEN": "token",
-               "INPUT_POST_COMMENT": "false", "INPUT_GENERATE_BUNDLE": "false", "INPUT_UPLOAD_SARIF": "false",
-               "INPUT_AUTO_MERGE": "false", "INPUT_MODEL_1": SPEC, **extra_env}
-        out = io.StringIO()
-        with patch.dict(os.environ, env, clear=False), \
-                patch("entrypoint.Github", return_value=gh), \
-                patch("entrypoint.fetch_pr_diff", return_value=DIFF), \
-                patch("entrypoint.DiffAnalyzer", CaptureAnalyzer), \
-                patch("entrypoint.RiskClassifier", StubClassifier), \
-                patch("entrypoint.DecisionEngine") as engine, \
-                patch("entrypoint.render_decision_card", return_value="card"), \
-                contextlib.redirect_stdout(out):
-            engine.return_value.decide.return_value = packet
-            with pytest.raises(SystemExit):
-                main()
-    return captured, out.getvalue()
+               "INPUT_POST_COMMENT": "true", "INPUT_GENERATE_BUNDLE": "true", "INPUT_UPLOAD_SARIF": "true",
+               "INPUT_AUTO_MERGE": "false", "INPUT_FAIL_ON_DASHBOARD_SYNC_ERROR": "false",
+               "INPUT_MODEL_1": SPEC, **(extra_env or {})}
+        out, err = io.StringIO(), io.StringIO()
+        saved = {k: os.environ.pop(k) for k in ("INPUT_CONCENTRATE_API_KEY", "CONCENTRATE_API_KEY")
+                 if k in os.environ}
+        try:
+            with patch.dict(os.environ, env, clear=False), \
+                    patch("entrypoint.Github", return_value=gh), \
+                    patch("entrypoint.fetch_pr_diff", return_value=DIFF), \
+                    patch("entrypoint.DiffAnalyzer", TransportAnalyzer), \
+                    patch("entrypoint.RiskClassifier", StubClassifier), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                with pytest.raises(SystemExit):
+                    main()
+        finally:
+            os.environ.update(saved)
+        comments = [c.args[0] for c in pr.create_issue_comment.call_args_list]
+        sarif = ws / "guardspine-results.sarif"
+        bundles = sorted((ws / ".guardspine" / "bundles").glob("*.json"))
+        return {
+            "analyzer": analyzers[0] if analyzers else None,
+            "log": out.getvalue() + err.getvalue(),
+            "comment": "\n".join(comments),
+            "sarif": sarif.read_text(encoding="utf-8") if sarif.exists() else "",
+            "bundle": "\n".join(b.read_text(encoding="utf-8") for b in bundles),
+        }
 
 
-def test_entrypoint_passes_the_concentrate_input_to_the_analyzer():
-    captured, log = _run_entrypoint({"INPUT_CONCENTRATE_API_KEY": KEY})
-    assert captured["kwargs"]["concentrate_key"] == KEY
-    assert captured["analyzer"].models == [("concentrate", PINNED)]
-    assert KEY not in log
+def _leaks(run):
+    """The one leak oracle used for clean runs and for the planted control."""
+    return [(sink, s) for sink in ("log", "comment", "sarif", "bundle")
+            for s in (KEY, ERROR_SENTINEL) if s in run[sink]]
 
 
-def test_entrypoint_announces_skipped_concentrate_review_without_a_key():
-    os.environ.pop("INPUT_CONCENTRATE_API_KEY", None)
-    os.environ.pop("CONCENTRATE_API_KEY", None)
-    captured, log = _run_entrypoint({})
-    assert captured["analyzer"].models == []
-    assert "AI review skipped" in log and "no Concentrate key" in log
+@pytest.mark.parametrize("event", [FORK_EVENT, DEPENDABOT_EVENT, TRUSTED_EVENT],
+                         ids=["fork", "dependabot", "trusted-missing-secret"])
+def test_no_key_runs_send_nothing_and_say_so(event):
+    gw = Gateway("ok")
+    run = _run_real_entrypoint(event, gw)
+    assert gw.requests == []
+    assert run["analyzer"].models == []
+    assert "AI review skipped" in run["log"] and "no Concentrate key" in run["log"]
+    assert "skipped (no provider key in this run)" in run["comment"]
+    assert '"models_skipped"' in run["bundle"]
+
+
+def test_key_present_run_reaches_only_concentrate_through_the_real_entrypoint():
+    # Positive control for the zero-request runs above.
+    gw = Gateway("ok")
+    run = _run_real_entrypoint(TRUSTED_EVENT, gw, {"INPUT_CONCENTRATE_API_KEY": KEY})
+    assert len(gw.requests) >= 1
+    assert all(str(r.url) == "https://api.concentrate.ai/v1/chat/completions" for r in gw.requests)
+    assert all(json.loads(r.content)["model"] == PINNED for r in gw.requests)
+    assert '"provider": "concentrate"' in run["bundle"]
+
+
+def test_key_and_gateway_error_body_reach_no_sink():
+    run = _run_real_entrypoint(TRUSTED_EVENT, Gateway("500"), {"INPUT_CONCENTRATE_API_KEY": KEY})
+    assert run["comment"] and run["sarif"] and run["bundle"]   # every sink was produced
+    assert _leaks(run) == []
+
+
+def test_the_leak_oracle_rejects_a_planted_leak_in_the_rendered_sinks():
+    run = _run_real_entrypoint(TRUSTED_EVENT, Gateway("500"), {"INPUT_CONCENTRATE_API_KEY": KEY},
+                               finding_message=f"planted {KEY} and {ERROR_SENTINEL}")
+    leaked_sinks = {sink for sink, _ in _leaks(run)}
+    assert {"sarif", "bundle"} <= leaked_sinks
+
+
+# ------------------------------------------------------ coverage and identity edges
+
+def test_partial_availability_marks_coverage_incomplete():
+    a = DiffAnalyzer(openrouter_key="k", model_1="anthropic/claude-sonnet-4.5",
+                     model_2="concentrate/deepinfra/glm-5.3")
+    with patch.object(a, "_call_openrouter", return_value=(_review_json(), {"model_id": "m"})):
+        result = a.analyze(DIFF, tier_override="L2")
+    cov = result["review_coverage"]
+    assert cov["complete"] is False and cov["skipped"] == 1 and cov["succeeded"] == 1
+
+
+def test_unparseable_diff_still_reports_skipped_models():
+    a = _analyzer(concentrate_key=None)
+    with patch("src.analyzer.PatchSet", side_effect=ValueError("bad diff")):
+        result = a.analyze("not a diff")
+    assert result["multi_model_review"]["models_skipped"] == a.models_skipped
+    assert result["review_coverage"]["complete"] is False
+
+
+def test_null_content_keeps_the_reported_identity():
+    other = "deepinfra/glm-5.3"
+
+    def gateway(request):
+        body = {"id": "x", "object": "chat.completion", "created": 0, "model": other,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": None}}]}
+        return httpx.Response(200, json=body, headers={"x-concentrate-cost": "0.001"})
+
+    a = _analyzer(gateway)
+    review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+    assert review["model_id"] == other and review["model_name"] == PINNED
+    assert review.get("parse_error") or review.get("schema_error")
+    prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+    (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    assert cross["model_id"] == other
+
+
+def test_outer_review_failure_records_not_reported():
+    a = _analyzer(Gateway("ok"))
+    with patch.object(a, "_get_model_review", side_effect=RuntimeError("boom")):
+        (r,) = a._parallel_review([("concentrate", PINNED)], DIFF, [], "default", False)
+    assert r["model_id"] == "not reported"
+
+
+def test_legacy_outer_failure_shape_unchanged():
+    a = DiffAnalyzer(openrouter_key="k", model_1="anthropic/claude-sonnet-4.5")
+    with patch.object(a, "_get_model_review", side_effect=RuntimeError("boom")):
+        (r,) = a._parallel_review([("openrouter", "anthropic/claude-sonnet-4.5")], DIFF, [], "default", False)
+    assert "model_id" not in r
+
+
+def test_comment_note_names_skipped_models():
+    from src.pr_commenter import PRCommenter
+    note = PRCommenter._coverage_note({"attempted": 0, "succeeded": 0, "complete": False, "skipped": 2})
+    assert "2 configured model(s) skipped" in note
+    assert PRCommenter._coverage_note({"attempted": 1, "succeeded": 1, "complete": True}) == ""
 
 
 # ------------------------------------------------------- G6 / G13a config
@@ -471,7 +559,64 @@ def test_concentrate_input_is_declared_and_mapped():
     assert data["runs"]["env"]["INPUT_CONCENTRATE_API_KEY"] == "${{ inputs.concentrate_api_key }}"
 
 
+def _simulated_metadata_tags(workflow_text, ref, sha="abc1234"):
+    """Tags docker/metadata-action v5 would emit for the workflow's rules on one event.
+
+    Mirrors the documented rule semantics for the rule types this workflow can
+    contain: semver {{version}}/{{major}}, sha, ref event=branch, and the
+    automatic latest tag (on for a non-prerelease semver tag unless flavor
+    latest=false). Rules of any other type fail the check rather than being ignored.
+    """
+    import yaml
+    steps = yaml.safe_load(workflow_text)["jobs"]["build-and-push"]["steps"]
+    meta = next(s["with"] for s in steps if "metadata-action" in s.get("uses", ""))
+    rules = [r.strip() for r in meta["tags"].splitlines() if r.strip()]
+    flavor = (meta.get("flavor") or "").replace(" ", "")
+    tags = set()
+    version = ref[len("refs/tags/v"):] if ref.startswith("refs/tags/v") else None
+    prerelease = bool(version and "-" in version)
+    for rule in rules:
+        if rule == "type=semver,pattern={{version}}":
+            if version:
+                tags.add(version)
+        elif rule == "type=semver,pattern={{major}}":
+            if version and not prerelease:
+                tags.add(version.split(".")[0])
+        elif rule == "type=sha":
+            tags.add("sha-" + sha[:7])
+        elif rule == "type=ref,event=branch":
+            if ref.startswith("refs/heads/"):
+                tags.add(ref[len("refs/heads/"):])
+        else:
+            raise AssertionError(f"unmodelled metadata rule: {rule}")
+    if version and not prerelease and "latest=false" not in flavor:
+        tags.add("latest")
+    return tags
+
+
+FLOATING = {"2", "latest", "main"}
+EVENTS = ("refs/tags/v2.8.0-rc.1", "refs/tags/v2.8.0", "refs/heads/main")
+
+
 def test_docker_publish_holds_every_floating_alias():
     wf = (ROOT / ".github" / "workflows" / "docker-publish.yml").read_text(encoding="utf-8")
-    assert "pattern={{major}}" not in wf
-    assert re.search(r"flavor:\s*\|?\s*\n?\s*latest=false", wf)
+    for ref in EVENTS:
+        assert not (_simulated_metadata_tags(wf, ref) & FLOATING), ref
+    assert _simulated_metadata_tags(wf, "refs/tags/v2.8.0") == {"2.8.0", "sha-abc1234"}
+
+
+NL = chr(10)
+VERSION_RULE = "            type=semver,pattern={{version}}" + NL
+
+
+@pytest.mark.parametrize("mutation", [
+    (VERSION_RULE, VERSION_RULE + "            type=semver,pattern={{major}}" + NL),
+    ("            latest=false" + NL, "            latest=auto" + NL),
+    (VERSION_RULE, "            type=ref,event=branch" + NL + VERSION_RULE),
+])
+def test_the_alias_check_rejects_each_restored_rule(mutation):
+    wf = (ROOT / ".github" / "workflows" / "docker-publish.yml").read_text(encoding="utf-8")
+    old, new = mutation
+    assert wf.count(old) == 1
+    bad = wf.replace(old, new)
+    assert any(_simulated_metadata_tags(bad, ref) & FLOATING for ref in EVENTS)

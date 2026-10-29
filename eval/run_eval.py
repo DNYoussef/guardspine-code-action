@@ -127,6 +127,7 @@ class Result:
     early_exit: bool = False
     cve_id: str = ""
     introducing_reasoning: str = ""
+    models_skipped: int = 0  # configured models that could not run (no provider key)
 
     @property
     def flagged(self) -> bool:
@@ -262,6 +263,7 @@ def run_sample(
         severities=sevs,
         decision=packet.decision,
         models_used=analysis.get("models_used", 0) if isinstance(analysis.get("models_used"), int) else 0,
+        models_skipped=len((analysis.get("multi_model_review") or {}).get("models_skipped") or []),
         consensus=analysis.get("consensus_risk") or "",
         agreement=analysis.get("agreement_score") or 0.0,
         elapsed=round(time.monotonic() - start, 2),
@@ -628,7 +630,21 @@ def _preflight_api_key(api_key: str, tier: str | None, provider: str = "openrout
     if not tier or tier == "L0" or not api_key:
         return True
     if provider == "concentrate":
-        return _preflight_concentrate(api_key, models or [])
+        # Validate every pin BEFORE any request: an unpinned or non-allowlisted
+        # spec must never reach the network, not even as a preflight.
+        if not models:
+            print("ERROR: --provider concentrate needs --models concentrate/<host>/<model>[,...]")
+            return False
+        for spec in models:
+            if not spec.startswith("concentrate/"):
+                print(f"ERROR: {spec!r} is not a concentrate/<host>/<model> spec")
+                return False
+            try:
+                DiffAnalyzer._parse_concentrate_pin(spec)
+            except ValueError as e:
+                print(f"ERROR: {e}")
+                return False
+        return _preflight_concentrate(api_key, models)
     try:
         import urllib.request
         req = urllib.request.Request(

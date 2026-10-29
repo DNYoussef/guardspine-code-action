@@ -33,12 +33,12 @@ jobs:
         id: meta
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # Floating aliases (:2, :latest) are held until a release has passed
-          # dogfood review; restore {{major}} and automatic latest only then.
+          # Floating aliases (:2, :latest, :main) are held until a release has passed
+          # dogfood review; restore them only then. Only the exact version and sha
+          # tags are published meanwhile.
           flavor: |
             latest=false
           tags: |
-            type=ref,event=branch
             type=semver,pattern={{version}}
             type=sha
 
