@@ -598,6 +598,17 @@ def _open_no_redirect(req, timeout=10):
     return _no_redirect_opener().open(req, timeout=timeout)
 
 
+def _safe_cost(header) -> str:
+    """Only a finite, non-negative number is ever printed; any other header text
+    (which a gateway could fill with anything, including an echoed key) is not."""
+    import math
+    try:
+        value = float(header)
+    except (TypeError, ValueError):
+        return "unreported"
+    return f"{value:.6f} USD" if math.isfinite(value) and value >= 0 else "unreported"
+
+
 def _preflight_concentrate(api_key: str, models: list[str]) -> bool:
     """One 5-token authenticated call to the fixed Concentrate endpoint only."""
     import urllib.error
@@ -611,7 +622,7 @@ def _preflight_concentrate(api_key: str, models: list[str]) -> bool:
     try:
         with _open_no_redirect(req, timeout=30) as resp:
             resp.read()
-            print(f"Concentrate key: accepted (preflight cost {resp.headers.get('x-concentrate-cost', 'unreported')})")
+            print(f"Concentrate key: accepted (preflight cost {_safe_cost(resp.headers.get('x-concentrate-cost'))})")
         return True
     except urllib.error.HTTPError as e:
         if e.code in (401, 402):

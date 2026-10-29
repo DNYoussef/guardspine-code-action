@@ -156,3 +156,33 @@ def test_eval_result_records_skipped_models(tmp_path):
     r = run_eval.run_sample(sample, "hand-crafted", a, run_eval.RiskClassifier(rubric="default"),
                             run_eval.DecisionEngine(policy="standard"), forced_tier="L2")
     assert r.models_skipped == 2
+
+
+class EchoingUrlopen(FakeUrlopen):
+    """A preflight response whose cost header echoes whatever we choose."""
+
+    def __init__(self, body, cost_header):
+        super().__init__(body)
+        self.cost_header = cost_header
+
+    def __call__(self, req, timeout=None):
+        resp = super().__call__(req, timeout)
+        resp.headers = {"x-concentrate-cost": self.cost_header}
+        return resp
+
+
+@pytest.mark.parametrize("header", [CN_KEY, f"0.001 {CN_KEY}", "nan", "-1", "inf"])
+def test_preflight_never_prints_a_non_numeric_cost_header(header, capsys):
+    fake = EchoingUrlopen(b"{}", header)
+    with patch.object(run_eval, "_open_no_redirect", fake):
+        assert run_eval._preflight_api_key(CN_KEY, "L2", provider="concentrate", models=SPECS)
+    out = capsys.readouterr().out
+    assert CN_KEY not in out and "unreported" in out
+
+
+def test_preflight_prints_a_valid_numeric_cost(capsys):
+    # Positive control: the same capture shows the header when it is a real number.
+    fake = EchoingUrlopen(b"{}", "0.000123")
+    with patch.object(run_eval, "_open_no_redirect", fake):
+        run_eval._preflight_api_key(CN_KEY, "L2", provider="concentrate", models=SPECS)
+    assert "0.000123 USD" in capsys.readouterr().out
