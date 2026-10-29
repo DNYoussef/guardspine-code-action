@@ -490,6 +490,9 @@ class DiffAnalyzer:
         # Test seam: an httpx transport for the Concentrate client. None in production.
         self._concentrate_transport = None
         self._concentrate_ledger: list[Optional[float]] = []
+        # Provenance of every Concentrate attempt in every round (deliberation keeps
+        # only final-round reviews; this keeps the ones that came before).
+        self._concentrate_attempts: list[dict] = []
         self._concentrate_lock = threading.Lock()
         # Configured models that cannot run, with the reason, so reduced coverage is visible.
         self.models_skipped: list[dict] = []
@@ -785,6 +788,7 @@ class DiffAnalyzer:
 
         with self._concentrate_lock:
             self._concentrate_ledger = []
+            self._concentrate_attempts = []
 
         if models_needed > 0 and self.ai_enabled:
             if deliberate and models_needed >= 2:
@@ -805,6 +809,8 @@ class DiffAnalyzer:
                 multi_review["review_coverage"] = coverage
             if any(p == "concentrate" for p, _ in self.models):
                 multi_review["concentrate_cost"] = self._concentrate_cost_summary()
+                with self._concentrate_lock:
+                    multi_review["concentrate_attempts"] = list(self._concentrate_attempts)
             result.multi_model_review = multi_review
 
             # Extract top-level outputs for entrypoint.py and eval harness
@@ -1024,13 +1030,13 @@ class DiffAnalyzer:
                 try:
                     reviews[idx] = future.result()
                 except Exception as e:
-                    reviews[idx] = self._with_serving_host(self._fail_closed_review(
+                    reviews[idx] = self._note_attempt(self._with_serving_host(self._fail_closed_review(
                         "Provider review failed",
                         model_name=model,
                         provider=provider,
                         error=type(e).__name__,
                         **({"model_id": NOT_REPORTED} if provider == "concentrate" else {}),
-                    ), provider, {})
+                    ), provider, {}), provider, 1)
         return [r for r in reviews if r is not None]
 
     def _parallel_crosscheck(
@@ -1068,9 +1074,10 @@ class DiffAnalyzer:
                     parsed["prompt_hash"] = prompt_hashes[idx]
                     parsed["response_hash"] = f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
                     parsed["raw_response"] = raw[:500]
-                    reviews[idx] = self._with_serving_host(parsed, provider, meta)
+                    reviews[idx] = self._note_attempt(
+                        self._with_serving_host(parsed, provider, meta), provider, round_num)
                 except Exception as e:
-                    reviews[idx] = self._with_serving_host(self._fail_closed_review(
+                    reviews[idx] = self._note_attempt(self._with_serving_host(self._fail_closed_review(
                         "Provider review failed",
                         model_name=model,
                         provider=provider,
@@ -1078,7 +1085,7 @@ class DiffAnalyzer:
                         prompt_hash=prompt_hashes.get(idx, ""),
                         response_hash="",
                         error=type(e).__name__,
-                    ), provider, meta)
+                    ), provider, meta), provider, round_num)
         return [r for r in reviews if r is not None]
 
     def _build_crosscheck_prompt(
@@ -1171,6 +1178,22 @@ Respond only through the required structured verdict schema:
             return meta["model_id"]
         return cls._unreported_model_id(provider, model)
 
+    def _note_attempt(self, review: dict, provider: str, round_num: int) -> dict:
+        """Keep provenance of a Concentrate attempt for sealing, whatever round it was."""
+        if provider == "concentrate":
+            entry = {
+                "round": round_num,
+                "model_name": review.get("model_name", ""),
+                "model_id": review.get("model_id", NOT_REPORTED),
+                "serving_host": review.get("serving_host", NOT_EXPOSED),
+                "prompt_hash": review.get("prompt_hash", ""),
+                "response_hash": review.get("response_hash", ""),
+                "failed": self._review_failed(review),
+            }
+            with self._concentrate_lock:
+                self._concentrate_attempts.append(entry)
+        return review
+
     @staticmethod
     def _with_serving_host(review: dict, provider: str, meta: dict) -> dict:
         if provider == "concentrate":
@@ -1249,10 +1272,10 @@ Respond only through the required structured verdict schema:
             parsed["prompt_hash"] = prompt_hash
             parsed["response_hash"] = f"sha256:{hashlib.sha256(response.encode('utf-8')).hexdigest()}"
             parsed["raw_response"] = response[:500]  # Truncate for storage
-            return self._with_serving_host(parsed, provider, meta)
+            return self._note_attempt(self._with_serving_host(parsed, provider, meta), provider, 1)
 
         except Exception as e:
-            return self._with_serving_host(self._fail_closed_review(
+            return self._note_attempt(self._with_serving_host(self._fail_closed_review(
                 "Provider review failed",
                 model_name=model,
                 provider=provider,
@@ -1260,7 +1283,7 @@ Respond only through the required structured verdict schema:
                 prompt_hash=prompt_hash,
                 response_hash="",
                 error=type(e).__name__,
-            ), provider, meta)
+            ), provider, meta), provider, 1)
 
     def _build_review_prompt(
         self, diff_content: str, sensitive_zones: list,
@@ -1813,13 +1836,24 @@ Respond ONLY with the structured object above."""
                 self._record_concentrate_cost(None)  # charge, if any, is unknown
                 raise
             self._record_concentrate_cost(raw.headers.get("x-concentrate-cost"))
-            response = raw.parse()
-            reported = getattr(response, "model", None) or NOT_REPORTED
-            choice = response.choices[0] if response.choices else None
-            text = choice.message.content if choice is not None and choice.message is not None else None
-            # Null or missing content is a failed review, not a lost identity: the
-            # strict parser rejects "" fail-closed and the reported model is kept.
-            return (text if isinstance(text, str) else ""), {"model_id": reported, "serving_host": NOT_EXPOSED}
+            # Read the reported model from the raw body first, so no malformed
+            # completion envelope can erase an identity the gateway did send.
+            try:
+                body = raw.http_response.json()
+                reported = body.get("model") if isinstance(body, dict) else None
+            except Exception:
+                reported = None
+            meta = {"model_id": reported if isinstance(reported, str) and reported else NOT_REPORTED,
+                    "serving_host": NOT_EXPOSED}
+            try:
+                response = raw.parse()
+                choice = response.choices[0] if response.choices else None
+                text = choice.message.content if choice is not None and choice.message is not None else None
+            except Exception:
+                text = None
+            # Null, missing or unreadable content is a failed review, not a lost
+            # identity: the strict parser rejects "" fail-closed and meta is kept.
+            return (text if isinstance(text, str) else ""), meta
         finally:
             http.close()
 

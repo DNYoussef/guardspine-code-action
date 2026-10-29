@@ -194,6 +194,11 @@ class BundleGenerator:
                 "pii_shield": pii_shield,
                 "sanitization": sanitization,
                 "reviews_sealed": reviews_sealed,
+                # Every Concentrate attempt in every deliberation round, failures
+                # included. Present only when Concentrate ran, so legacy bundles
+                # keep their exact v2.7.4 event shape.
+                **({"concentrate_attempts_sealed": list(mmr["concentrate_attempts"])}
+                   if mmr.get("concentrate_attempts") else {}),
             }
         )
         previous_hash = analysis_event.compute_hash(previous_hash)

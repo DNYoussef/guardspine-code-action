@@ -708,3 +708,62 @@ def test_any_failure_after_the_response_keeps_the_reported_identity():
         (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
     for r in (review, cross):
         assert r.get("error") and r["model_id"] == OTHER and r["serving_host"] == "not exposed"
+
+
+def test_malformed_envelope_keeps_identity_everywhere():
+    def gateway(request):
+        body = {"id": "x", "object": "chat.completion", "created": 0, "model": OTHER,
+                "choices": [{"index": 0, "finish_reason": "stop", "message": "not-an-object"}]}
+        return httpx.Response(200, json=body, headers={"x-concentrate-cost": "0.001"})
+
+    a = _analyzer(gateway)
+    review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+    assert review["model_id"] == OTHER
+    prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+    (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    assert cross["model_id"] == OTHER
+    sealed, _ = _bundle_for(gateway)
+    assert sealed[0]["model_id"] == OTHER and sealed[0]["failed"] is True
+
+
+def test_an_intermediate_deliberation_failure_is_sealed():
+    from src.bundle_generator import BundleGenerator
+    calls = {}
+
+    def gateway(request):
+        model = json.loads(request.content)["model"]
+        calls[model] = calls.get(model, 0) + 1
+        if model == OTHER and calls[model] == 2:          # glm-5.3 fails in round 2 only
+            return httpx.Response(500, json={"error": {"message": "x"}}, headers={"x-concentrate-cost": "0"})
+        body = {"id": "x", "object": "chat.completion", "created": 0, "model": model,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": _review_json()}}]}
+        return httpx.Response(200, json=body, headers={"x-concentrate-cost": "0.001"})
+
+    a = _analyzer(gateway, model_2="concentrate/deepinfra/glm-5.3", model_3="concentrate/deepinfra/kimi-k3")
+    with patch.object(a, "_should_exit_early", return_value=False):
+        result = a.analyze(DIFF, tier_override="L3", deliberate=True)
+    final = result["multi_model_review"]["reviews"]
+    assert not any(DiffAnalyzer._review_failed(r) for r in final)      # round 3 all succeeded
+    bundle = BundleGenerator().create_bundle(pr=_pr(), analysis=result, risk_result={
+        "risk_tier": "L3", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "r"},
+        repository="o/r", commit_sha="abc1234")
+    data = next(e for e in bundle["events"] if e["event_type"] == "analysis_completed")["data"]
+    attempts = data["concentrate_attempts_sealed"]
+    assert len(attempts) == 9 and {a_["round"] for a_ in attempts} == {1, 2, 3}
+    failed = [a_ for a_ in attempts if a_["failed"]]
+    assert [(f["round"], f["model_name"], f["model_id"]) for f in failed] == [(2, OTHER, "not reported")]
+    assert bundle["analysis_snapshot"]["multi_model_review"]["concentrate_attempts"] == attempts
+
+
+def test_legacy_bundles_gain_no_concentrate_fields():
+    from src.bundle_generator import BundleGenerator
+    a = DiffAnalyzer(openrouter_key="k", model_1="anthropic/claude-sonnet-4.5")
+    with patch.object(a, "_call_openrouter", return_value=(_review_json(), {"model_id": "m"})):
+        result = a.analyze(DIFF, tier_override="L1")
+    bundle = BundleGenerator().create_bundle(pr=_pr(), analysis=result, risk_result={
+        "risk_tier": "L1", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "r"},
+        repository="o/r", commit_sha="abc1234")
+    text = json.dumps(bundle, default=str)
+    for field in ("concentrate_attempts", "concentrate_cost", "serving_host", "models_skipped"):
+        assert field not in text, field
