@@ -767,3 +767,45 @@ def test_legacy_bundles_gain_no_concentrate_fields():
     text = json.dumps(bundle, default=str)
     for field in ("concentrate_attempts", "concentrate_cost", "serving_host", "models_skipped"):
         assert field not in text, field
+
+
+# ------------------------------------------------- SDK debug logging (fresh process)
+
+_DEBUG_CHILD = r'''
+import json, os, sys
+sys.path[:0] = [sys.argv[1], os.path.join(sys.argv[1], "src")]
+os.environ["OPENAI_LOG"] = "debug"
+import httpx
+import src.analyzer as an
+if sys.argv[2] == "unhardened":
+    an._silence_sdk_debug_logging = lambda: None
+key = sys.argv[3]
+review = json.dumps({an.AI_REVIEW_ENVELOPE_KEY: {
+    "schema_version": an.AI_REVIEW_SCHEMA_VERSION, "summary": "s", "intent": "bugfix", "concerns": [],
+    "risk_assessment": "approve", "confidence": 0.9, "rubric_scores": {k: None for k in (
+        "security_impact", "code_quality", "test_coverage", "documentation", "rollback_safety")}}})
+def handler(request):
+    body = {"id": "x", "object": "chat.completion", "created": 0, "model": "deepinfra/mimo-v2.6-pro",
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": review}}]}
+    return httpx.Response(200, json=body, headers={"x-request-id": key, "x-concentrate-cost": "0"})
+a = an.DiffAnalyzer(concentrate_key=key, model_1="concentrate/deepinfra/mimo-v2.6-pro")
+a._concentrate_transport = httpx.MockTransport(handler)
+a._call_concentrate("prompt", "deepinfra/mimo-v2.6-pro")
+'''
+
+
+def _debug_run(mode):
+    import subprocess
+    r = subprocess.run([sys.executable, "-c", _DEBUG_CHILD, str(ROOT), mode, KEY],
+                       capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr[-500:]
+    return r.stdout + r.stderr
+
+
+def test_sdk_debug_logging_cannot_print_an_echoed_key():
+    assert KEY not in _debug_run("hardened")
+
+
+def test_sdk_debug_logging_control_does_leak_without_the_guard():
+    # Positive control: the capture really can see the SDK's debug header log.
+    assert KEY in _debug_run("unhardened")

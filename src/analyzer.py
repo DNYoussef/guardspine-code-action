@@ -13,6 +13,7 @@ Architecture:
   L4: 3 models review + rubric evaluation + human approval required
 """
 
+import os
 import re
 import json
 import hashlib
@@ -47,6 +48,21 @@ NOT_REPORTED = "not reported"
 # The pinned host in model_name is what we ASKED for; this records what we SAW.
 NOT_EXPOSED = "not exposed"
 CONCENTRATE_MODEL_RE = re.compile(r"[A-Za-z0-9._:-]+")
+
+
+def _silence_sdk_debug_logging() -> None:
+    """Stop the OpenAI SDK and its HTTP stack from logging request or response
+    headers. With OPENAI_LOG=debug the SDK logs response headers (including
+    x-request-id) before any of our redaction runs, so a gateway that echoed the
+    key would write it to the job log. Called before the Concentrate client exists."""
+    import logging
+
+    os.environ.pop("OPENAI_LOG", None)
+    for name in ("openai", "httpx", "httpcore"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.WARNING)
+        lg.handlers = [logging.NullHandler()]
+        lg.propagate = False
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
 AI_REVIEW_ENVELOPE_KEY = "codeguard_review"
@@ -1812,6 +1828,7 @@ Respond ONLY with the structured object above."""
 
     def _call_concentrate(self, prompt: str, model: str) -> tuple[str, dict]:
         """Call the Concentrate gateway (OpenAI-compatible) and return (text, metadata)."""
+        _silence_sdk_debug_logging()
         import httpx
         import openai
 
