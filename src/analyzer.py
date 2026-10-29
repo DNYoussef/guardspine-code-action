@@ -1826,6 +1826,11 @@ Respond ONLY with the structured object above."""
             "total_usd": "unknown" if unreported else total,
         }
 
+    def _redact_key(self, value: str) -> str:
+        if self.concentrate_key and self.concentrate_key in value:
+            return value.replace(self.concentrate_key, "[REDACTED_KEY]")
+        return value
+
     def _call_concentrate(self, prompt: str, model: str) -> tuple[str, dict]:
         """Call the Concentrate gateway (OpenAI-compatible) and return (text, metadata)."""
         _silence_sdk_debug_logging()
@@ -1860,7 +1865,8 @@ Respond ONLY with the structured object above."""
                 reported = body.get("model") if isinstance(body, dict) else None
             except Exception:
                 reported = None
-            meta = {"model_id": reported if isinstance(reported, str) and reported else NOT_REPORTED,
+            meta = {"model_id": self._redact_key(reported) if isinstance(reported, str) and reported
+                    else NOT_REPORTED,
                     "serving_host": NOT_EXPOSED}
             try:
                 response = raw.parse()
@@ -1870,7 +1876,9 @@ Respond ONLY with the structured object above."""
                 text = None
             # Null, missing or unreadable content is a failed review, not a lost
             # identity: the strict parser rejects "" fail-closed and meta is kept.
-            return (text if isinstance(text, str) else ""), meta
+            # Gateway-controlled text never carries our credential into reviews,
+            # comments or the evidence bundle, even if the gateway echoes it.
+            return (self._redact_key(text) if isinstance(text, str) else ""), meta
         finally:
             http.close()
 

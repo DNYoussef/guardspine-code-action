@@ -186,3 +186,13 @@ def test_preflight_prints_a_valid_numeric_cost(capsys):
     with patch.object(run_eval, "_open_no_redirect", fake):
         run_eval._preflight_api_key(CN_KEY, "L2", provider="concentrate", models=SPECS)
     assert "0.000123 USD" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("tier", [None, "L1", "L2", "L3"])
+@pytest.mark.parametrize("specs", [
+    ["concentrate/deepinfra/mimo-v2.6-pro", "deepinfra/glm-5.3"],
+    ["concentrate/deepinfra/mimo-v2.6-pro", "concentrate/moonshot/kimi-k3"],
+])
+def test_mixed_or_invalid_candidate_lists_are_rejected_at_construction(tier, specs):
+    with pytest.raises(SystemExit):
+        run_eval.make_analyzer(CN_KEY, tier, provider="concentrate", models=specs)

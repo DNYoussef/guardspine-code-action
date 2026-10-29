@@ -171,6 +171,16 @@ def make_analyzer(openrouter_key: str, tier: str | None, provider: str = "openro
         if not specs:
             print("ERROR: --provider concentrate needs --models concentrate/<host>/<model>[,...]")
             sys.exit(2)
+        # Every candidate is validated here, whatever the tier and before any
+        # network use; a non-concentrate entry would otherwise be dropped silently.
+        for spec in specs:
+            try:
+                if not spec.startswith("concentrate/"):
+                    raise ValueError(f"{spec!r} is not a concentrate/<host>/<model> spec")
+                DiffAnalyzer._parse_concentrate_pin(spec)
+            except ValueError as e:
+                print(f"ERROR: {e}")
+                sys.exit(2)
         m1, m2, m3 = (specs + [None, None, None])[:3]
         return DiffAnalyzer(concentrate_key=openrouter_key, model_1=m1, model_2=m2, model_3=m3,
                             ai_review=tier != "L0" and bool(openrouter_key))

@@ -809,3 +809,40 @@ def test_sdk_debug_logging_cannot_print_an_echoed_key():
 def test_sdk_debug_logging_control_does_leak_without_the_guard():
     # Positive control: the capture really can see the SDK's debug header log.
     assert KEY in _debug_run("unhardened")
+
+
+# ----------------------------------------- gateway echoing the key in its response
+
+def _echo_gateway(model_value, content, status=200):
+    def gateway(request):
+        body = {"id": "x", "object": "chat.completion", "created": 0, "model": model_value,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": content}}]}
+        return httpx.Response(status, json=body, headers={"x-concentrate-cost": "0.001"})
+    return gateway
+
+
+def _echoed_review():
+    return _review_json(concern=f"leaked {KEY} in a concern").replace(
+        "Builds SQL with an f-string.", f"summary echoes {KEY}")
+
+
+@pytest.mark.parametrize("model_value,content", [
+    (f"deepinfra/{KEY}", _echoed_review()),     # success, key in model, summary and concern
+    (f"{KEY}", None),                            # failure (null content), key in model
+])
+def test_a_key_echoed_by_the_gateway_reaches_no_review_or_bundle(model_value, content):
+    a = _analyzer(_echo_gateway(model_value, content))
+    result = a.analyze(DIFF, tier_override="L1")
+    sealed, snapshot = _bundle_for(_echo_gateway(model_value, content))
+    blob = json.dumps(dict(result.items()), default=str) + json.dumps(sealed) + json.dumps(snapshot)
+    assert KEY not in blob
+    assert "[REDACTED_KEY]" in blob                 # the redaction is visible, not silent
+
+
+def test_echo_control_shows_the_key_without_redaction():
+    # Positive control: with redaction disabled the same capture finds the key.
+    a = _analyzer(_echo_gateway(f"deepinfra/{KEY}", _echoed_review()))
+    with patch.object(DiffAnalyzer, "_redact_key", lambda self, v: v):
+        result = a.analyze(DIFF, tier_override="L1")
+    assert KEY in json.dumps(dict(result.items()), default=str)
