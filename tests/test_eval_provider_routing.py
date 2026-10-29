@@ -196,3 +196,9 @@ def test_preflight_prints_a_valid_numeric_cost(capsys):
 def test_mixed_or_invalid_candidate_lists_are_rejected_at_construction(tier, specs):
     with pytest.raises(SystemExit):
         run_eval.make_analyzer(CN_KEY, tier, provider="concentrate", models=specs)
+
+
+def test_more_than_three_valid_candidates_is_rejected_not_truncated():
+    four = SPECS + ["concentrate/deepinfra/kimi-k3", "concentrate/fireworks/deepseek-v4-pro"]
+    with pytest.raises(SystemExit):
+        run_eval.make_analyzer(CN_KEY, None, provider="concentrate", models=four)

@@ -1084,6 +1084,8 @@ class DiffAnalyzer:
                 try:
                     raw, meta = future.result()
                     parsed = self._parse_review_response(raw)
+                    if provider == "concentrate":
+                        parsed = self._redact_parsed(parsed)
                     parsed["model_name"] = model
                     parsed["provider"] = provider
                     parsed["model_id"] = meta.get("model_id", model)
@@ -1282,6 +1284,8 @@ Respond only through the required structured verdict schema:
 
             # Parse response
             parsed = self._parse_review_response(response)
+            if provider == "concentrate":
+                parsed = self._redact_parsed(parsed)
             parsed["model_name"] = model
             parsed["provider"] = provider
             parsed["model_id"] = meta.get("model_id", model)
@@ -1827,8 +1831,24 @@ Respond ONLY with the structured object above."""
         }
 
     def _redact_key(self, value: str) -> str:
-        if self.concentrate_key and self.concentrate_key in value:
-            return value.replace(self.concentrate_key, "[REDACTED_KEY]")
+        """Replace the configured key in gateway text, including spellings where any
+        character is a JSON unicode escape (decoding would otherwise restore it)."""
+        key = self.concentrate_key
+        if not key or not isinstance(value, str):
+            return value
+        # Each character matches itself or its literal backslash-u-hex escape.
+        pattern = "".join(
+            r"(?:%s|\\u%04x)" % (re.escape(c), ord(c)) for c in key)
+        return re.sub(pattern, "[REDACTED_KEY]", value, flags=re.IGNORECASE)
+
+    def _redact_parsed(self, value):
+        """Redact the key from every string of an already-decoded review."""
+        if isinstance(value, str):
+            return self._redact_key(value)
+        if isinstance(value, list):
+            return [self._redact_parsed(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self._redact_parsed(v) for k, v in value.items()}
         return value
 
     def _call_concentrate(self, prompt: str, model: str) -> tuple[str, dict]:

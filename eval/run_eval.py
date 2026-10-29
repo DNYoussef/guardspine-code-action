@@ -181,6 +181,9 @@ def make_analyzer(openrouter_key: str, tier: str | None, provider: str = "openro
             except ValueError as e:
                 print(f"ERROR: {e}")
                 sys.exit(2)
+        if len(specs) > 3:
+            print(f"ERROR: at most 3 models (model_1..3); got {len(specs)}")
+            sys.exit(2)
         m1, m2, m3 = (specs + [None, None, None])[:3]
         return DiffAnalyzer(concentrate_key=openrouter_key, model_1=m1, model_2=m2, model_3=m3,
                             ai_review=tier != "L0" and bool(openrouter_key))

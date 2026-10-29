@@ -846,3 +846,38 @@ def test_echo_control_shows_the_key_without_redaction():
     with patch.object(DiffAnalyzer, "_redact_key", lambda self, v: v):
         result = a.analyze(DIFF, tier_override="L1")
     assert KEY in json.dumps(dict(result.items()), default=str)
+
+
+def _escaped(text):
+    # Every character of the key written as a JSON unicode escape inside the raw body.
+    return "".join(r"\u%04x" % ord(c) for c in text)
+
+
+def test_a_json_escaped_key_is_redacted_through_every_rendered_sink():
+    raw = _review_json(concern="leaked " + "ESCAPEDKEYMARKER").replace("ESCAPEDKEYMARKER", _escaped(KEY))
+    assert KEY not in raw and json.loads(raw)  # the raw body only holds the escaped form
+
+    def gateway(request):
+        body = '{"id":"x","object":"chat.completion","created":0,"model":"%s","choices":[{"index":0,' \
+               '"finish_reason":"stop","message":{"role":"assistant","content":%s}}]}' % (PINNED, json.dumps(raw))
+        return httpx.Response(200, content=body.encode(), headers={"x-concentrate-cost": "0.001",
+                                                                   "content-type": "application/json"})
+
+    run = _run_real_entrypoint(TRUSTED_EVENT, gateway, {"INPUT_CONCENTRATE_API_KEY": KEY})
+    assert run["comment"] and run["bundle"]
+    assert _leaks(run) == []
+    a = _analyzer(gateway)
+    review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+    assert KEY not in json.dumps(review) and "[REDACTED_KEY]" in json.dumps(review)
+    prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+    (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    assert KEY not in json.dumps(cross)
+
+
+def test_escaped_key_control_decodes_to_the_real_key():
+    # Positive control: with redaction disabled, decoding the escaped body restores the key.
+    raw = _review_json(concern="ESCAPEDKEYMARKER").replace("ESCAPEDKEYMARKER", _escaped(KEY))
+    assert KEY not in raw
+    with patch.object(DiffAnalyzer, "_redact_key", lambda self, v: v):
+        parsed = _analyzer()._parse_review_response(raw)
+    assert KEY in json.dumps(parsed)
