@@ -11,6 +11,7 @@ These tests are intentionally strict. They lock behavior for:
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -32,10 +33,21 @@ from src.decision_engine import DecisionEngine, Finding as DecisionFinding
 
 
 class TestActionSupplyChainRegressions(unittest.TestCase):
-    def test_action_uses_checked_out_dockerfile_not_mutable_main_image(self):
+    # The release pins the runtime image by digest (release/v2.7.4 onward). The old
+    # assertion expected `image: 'Dockerfile'` and failed on every release since.
+    IMMUTABLE_IMAGE = re.compile(
+        r"^\s*image:\s*'docker://ghcr\.io/dnyoussef/guardspine-code-action@sha256:[0-9a-f]{64}'\s*$", re.M)
+
+    def test_action_runs_an_immutable_digest_pinned_image(self):
         action_yml = (ROOT / "action.yml").read_text(encoding="utf-8")
-        self.assertIn("image: 'Dockerfile'", action_yml)
-        self.assertNotIn("ghcr.io/dnyoussef/codeguard-action:main", action_yml)
+        self.assertRegex(action_yml, self.IMMUTABLE_IMAGE)
+        self.assertNotIn("codeguard-action:main", action_yml)
+
+    def test_a_mutable_image_reference_is_rejected(self):
+        for mutable in ("  image: 'docker://ghcr.io/dnyoussef/guardspine-code-action:main'",
+                        "  image: 'docker://ghcr.io/dnyoussef/guardspine-code-action:2.8.0'",
+                        "  image: 'Dockerfile'"):
+            self.assertNotRegex(mutable, self.IMMUTABLE_IMAGE)
 
 
 class TestRubricSchemaCompatibility(unittest.TestCase):

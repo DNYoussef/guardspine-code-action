@@ -155,8 +155,24 @@ class Result:
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def make_analyzer(openrouter_key: str, tier: str | None) -> DiffAnalyzer:
-    """Create a DiffAnalyzer configured for a specific tier."""
+CONCENTRATE_CHAT_URL = "https://api.concentrate.ai/v1/chat/completions"
+
+
+def make_analyzer(openrouter_key: str, tier: str | None, provider: str = "openrouter",
+                  models: list[str] | None = None) -> DiffAnalyzer:
+    """Create a DiffAnalyzer configured for a specific tier.
+
+    provider="concentrate" uses the given key as a Concentrate key and requires
+    explicit concentrate/<host>/<model> specs; it never sets an OpenRouter key.
+    """
+    if provider == "concentrate":
+        specs = [m for m in (models or []) if m]
+        if not specs:
+            print("ERROR: --provider concentrate needs --models concentrate/<host>/<model>[,...]")
+            sys.exit(2)
+        m1, m2, m3 = (specs + [None, None, None])[:3]
+        return DiffAnalyzer(concentrate_key=openrouter_key, model_1=m1, model_2=m2, model_3=m3,
+                            ai_review=tier != "L0" and bool(openrouter_key))
     if tier == "L0":
         return DiffAnalyzer(openrouter_key=openrouter_key, ai_review=False)
     return DiffAnalyzer(openrouter_key=openrouter_key, ai_review=bool(openrouter_key))
@@ -471,16 +487,19 @@ def write_results(
 # Config
 # ---------------------------------------------------------------------------
 
-def load_api_key() -> str:
-    # Project-specific secrets take priority over env var
+def load_api_key(provider: str = "openrouter") -> str:
+    # Project-specific secrets take priority over env var. Each provider reads
+    # only its own entry, so one vendor's key is never handed to another.
+    field, env = {"openrouter": ("openrouter_api_key", "OPENROUTER_API_KEY"),
+                  "concentrate": ("concentrate_api_key", "CONCENTRATE_API_KEY")}[provider]
     secrets_path = _EVAL / ".codeguard" / ".secrets.toml"
     if secrets_path.exists():
         with open(secrets_path, "rb") as f:
             data = toml.load(f)
-        key = data.get("openrouter_api_key", "")
+        key = data.get(field, "")
         if key:
             return key
-    return os.environ.get("OPENROUTER_API_KEY", "")
+    return os.environ.get(env, "")
 
 
 def collect_samples(samples_dir: Path, dataset: str, sample_filter: str | None) -> list[tuple[Path, str]]:
@@ -544,6 +563,10 @@ def parse_args():
                     help="Dataset to run: hand-crafted, cvefixes, juliet, castle, real-cve, real-cve-intro, all")
     p.add_argument("--sample", default=None,
                     help="Run a single sample by filename")
+    p.add_argument("--provider", choices=["openrouter", "concentrate"], default="openrouter",
+                    help="AI provider for L1+ tiers (default: openrouter)")
+    p.add_argument("--models", default="",
+                    help="Comma-separated model specs, e.g. concentrate/deepinfra/mimo-v2.6-pro (required for concentrate)")
     p.add_argument("--deliberate", action="store_true",
                     help="Enable multi-round deliberation (cross-checking between models)")
     p.add_argument("-v", "--verbose", action="store_true",
@@ -557,10 +580,55 @@ def parse_args():
     return p.parse_args()
 
 
-def _preflight_api_key(api_key: str, tier: str | None) -> bool:
+def _no_redirect_opener():
+    """urllib opener that refuses every redirect (a redirect could forward the key)."""
+    import urllib.error
+    import urllib.request
+
+    class _Refuse(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+    return urllib.request.build_opener(_Refuse)
+
+
+def _open_no_redirect(req, timeout=10):
+    return _no_redirect_opener().open(req, timeout=timeout)
+
+
+def _preflight_concentrate(api_key: str, models: list[str]) -> bool:
+    """One 5-token authenticated call to the fixed Concentrate endpoint only."""
+    import urllib.error
+    import urllib.request
+
+    model = models[0][len("concentrate/"):] if models and models[0].startswith("concentrate/") else ""
+    body = json.dumps({"model": model, "max_tokens": 5,
+                       "messages": [{"role": "user", "content": "Reply with OK."}]}).encode("utf-8")
+    req = urllib.request.Request(CONCENTRATE_CHAT_URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
+    try:
+        with _open_no_redirect(req, timeout=30) as resp:
+            resp.read()
+            print(f"Concentrate key: accepted (preflight cost {resp.headers.get('x-concentrate-cost', 'unreported')})")
+        return True
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 402):
+            print(f"ERROR: Concentrate preflight failed with HTTP {e.code} (bad key or no credits).")
+            return False
+        print(f"WARNING: Concentrate preflight returned HTTP {e.code}")
+        return True
+    except Exception as e:
+        print(f"WARNING: Could not verify Concentrate key: {type(e).__name__}")
+        return True
+
+
+def _preflight_api_key(api_key: str, tier: str | None, provider: str = "openrouter",
+                       models: list[str] | None = None) -> bool:
     """Check API key has credits before running L1+ evals."""
     if not tier or tier == "L0" or not api_key:
         return True
+    if provider == "concentrate":
+        return _preflight_concentrate(api_key, models or [])
     try:
         import urllib.request
         req = urllib.request.Request(
@@ -594,15 +662,17 @@ def main():
     print("=" * 60)
 
     # API key
-    api_key = load_api_key()
-    print(f"OpenRouter key: {'set' if api_key else 'MISSING'}")
+    api_key = load_api_key(args.provider)
+    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    label = "OpenRouter" if args.provider == "openrouter" else "Concentrate"
+    print(f"{label} key: {'set' if api_key else 'MISSING'}")
 
     # Pre-flight: verify key has credits for L1+
-    if not _preflight_api_key(api_key, args.tier):
+    if not _preflight_api_key(api_key, args.tier, provider=args.provider, models=models):
         sys.exit(1)
 
     # Components
-    analyzer = make_analyzer(api_key, args.tier)
+    analyzer = make_analyzer(api_key, args.tier, provider=args.provider, models=models)
     classifier = RiskClassifier(rubric="default")
     engine = DecisionEngine(policy="standard")
 

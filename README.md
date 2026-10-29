@@ -30,6 +30,7 @@ When an auditor asks "How did this payment logic change get approved?", GitHub g
 | `OPENROUTER_API_KEY` | Pick one | Recommended - single key, 100+ models |
 | `ANTHROPIC_API_KEY` | Pick one | Direct Claude access |
 | `OPENAI_API_KEY` | Pick one | Direct GPT access |
+| `CONCENTRATE_API_KEY` | Pick one | [Concentrate](#option-5-concentrate-pinned-hosts) gateway; you pin the serving host for every model |
 | `PII_SHIELD_API_KEY` | Optional | Enable [PII-Shield](#pii-shield-integration) secret redaction |
 
 Ollama requires no API key (self-hosted, air-gapped).
@@ -315,14 +316,15 @@ Requires `contents: write` permission on the workflow.
 | `auto_merge` | Auto-merge clean PRs (decision=merge, tier below threshold) | `false` |
 | `auto_merge_method` | Merge method: merge, squash, or rebase | `squash` |
 | **Model Configuration** | | |
-| `model_1` | First model (L1+). Format: `provider/model` or just `model` | Auto-detect |
-| `model_2` | Second model (L2+). Format: `provider/model` or just `model` | Auto-detect |
-| `model_3` | Third model (L3+). Format: `provider/model` or just `model` | Auto-detect |
+| `model_1` | First model (L1+). Format: `provider/model`, just `model`, or `concentrate/<host>/<model>` | Auto-detect |
+| `model_2` | Second model (L2+). Same formats as `model_1` | Auto-detect |
+| `model_3` | Third model (L3+). Same formats as `model_1` | Auto-detect |
 | `ai_review` | Enable AI-powered code review | `true` |
 | **API Keys** | | |
 | `openai_api_key` | OpenAI key for GPT models (optional) | - |
 | `anthropic_api_key` | Anthropic key for Claude models (optional) | - |
 | `openrouter_api_key` | OpenRouter key (access 100+ models) (optional) | - |
+| `concentrate_api_key` | Concentrate gateway key (optional). Models must be `concentrate/<host>/<model>` | - |
 | `ollama_host` | Ollama server URL for local AI (optional) | - |
 | `guardspine_api_url` | GuardSpine backend URL for dashboard sync and Slack alerts | - |
 | `guardspine_api_key` | GuardSpine service API key for backend auth | - |
@@ -445,10 +447,36 @@ Just provide one API key -- GuardSpine Code will use default models:
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
+#### Option 5: Concentrate (pinned hosts)
+
+[Concentrate](https://concentrate.ai) is an OpenAI-compatible gateway. Every model is written as
+`concentrate/<host>/<model>`, so you choose which company serves it. The host must be one of
+`deepinfra`, `fireworks` or `novita`, the hosts Concentrate lists as zero-data-retention. Any other
+form is a configuration error rather than a silent fallback.
+
+```yaml
+- uses: DNYoussef/guardspine-code-action@v2.8.0
+  with:
+    github_token: ${{ secrets.GITHUB_TOKEN }}
+    concentrate_api_key: ${{ secrets.CONCENTRATE_API_KEY }}
+    model_1: concentrate/deepinfra/mimo-v2.6-pro   # Used for L1+
+    model_2: concentrate/deepinfra/glm-5.3         # Used for L2+
+    model_3: concentrate/deepinfra/kimi-k3         # Used for L3+
+```
+
+How this provider behaves:
+
+- Requests go only to `https://api.concentrate.ai/v1`. There is no base-URL input, and redirects are refused.
+- Each review may use up to 4000 output tokens, because reasoning models think before they answer. Other providers keep 1000.
+- Fork and Dependabot runs receive no secrets. Concentrate models are then skipped with a warning, and the evidence bundle lists them under `models_skipped`, so reduced coverage is visible.
+- The evidence bundle records `provider: concentrate`, the model you requested (`model_name`) and the model the gateway reported (`model_id`, or `not reported`) as separate fields, plus the gateway-reported cost of every call in `concentrate_cost`. A missing cost makes the total `unknown`, never zero.
+- Turn on zero data retention and logging off in your Concentrate account settings; the action cannot see or enforce them.
+
 | Provider | Data Residency | Best For |
 |----------|----------------|----------|
 | **Ollama** | Your infrastructure | Air-gapped/regulated environments |
 | **OpenRouter** | OpenRouter servers | Flexibility, model diversity |
+| **Concentrate** | Concentrate gateway, then the host you pin per model | Choosing the serving host yourself |
 | **Anthropic** | Anthropic servers | Direct Claude access |
 | **OpenAI** | OpenAI servers | Existing OpenAI users |
 

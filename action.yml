@@ -68,6 +68,9 @@ inputs:
     description: 'Model to use with OpenRouter (e.g., anthropic/claude-sonnet-4, google/gemini-3)'
     required: false
     default: 'anthropic/claude-sonnet-4.5'
+  concentrate_api_key:
+    description: 'Concentrate AI gateway key (optional). Models must be given as concentrate/<host>/<model> in model_1/2/3, with host one of deepinfra, fireworks, novita. Requests go only to https://api.concentrate.ai/v1. Without this key (fork and Dependabot runs get no secrets) those models are skipped with a warning.'
+    required: false
   ollama_host:
     description: 'Ollama server URL for local/on-prem AI (e.g., http://localhost:11434)'
     required: false
@@ -212,6 +215,7 @@ runs:
     INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
     INPUT_OPENROUTER_API_KEY: ${{ inputs.openrouter_api_key }}
     INPUT_OPENROUTER_MODEL: ${{ inputs.openrouter_model }}
+    INPUT_CONCENTRATE_API_KEY: ${{ inputs.concentrate_api_key }}
     INPUT_OLLAMA_HOST: ${{ inputs.ollama_host }}
     INPUT_OLLAMA_MODEL: ${{ inputs.ollama_model }}
     INPUT_MODEL_1: ${{ inputs.model_1 }}

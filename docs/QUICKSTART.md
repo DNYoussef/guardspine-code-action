@@ -20,6 +20,7 @@ You need ONE of these (pick whichever you already have):
   OPENROUTER_API_KEY    Recommended. One key, 100+ models. Get one at openrouter.ai
   ANTHROPIC_API_KEY     Direct Claude access. console.anthropic.com
   OPENAI_API_KEY        Direct GPT access. platform.openai.com
+  CONCENTRATE_API_KEY   Gateway with a host you pin per model (concentrate/<host>/<model>). concentrate.ai
 
 No API key? GuardSpine Code still works in rules-only mode (risk tiers + evidence
 bundles, no AI review). You can add a key later.

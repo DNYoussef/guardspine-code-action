@@ -486,6 +486,7 @@ def main():
     anthropic_key = get_env("INPUT_ANTHROPIC_API_KEY") or get_env("ANTHROPIC_API_KEY")
     openrouter_key = get_env("INPUT_OPENROUTER_API_KEY") or get_env("OPENROUTER_API_KEY")
     openrouter_model = get_env("INPUT_OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
+    concentrate_key = get_env("INPUT_CONCENTRATE_API_KEY") or get_env("CONCENTRATE_API_KEY")
 
     # Ollama for local/on-prem AI (no API key needed)
     ollama_host = get_env("INPUT_OLLAMA_HOST") or get_env("OLLAMA_HOST")
@@ -677,6 +678,7 @@ def main():
         model_2=model_2,
         model_3=model_3,
         ai_review=ai_review,
+        concentrate_key=concentrate_key,
     )
     # Log AI configuration for diagnostics
     print(f"AI review enabled: {ai_review}")
@@ -684,6 +686,9 @@ def main():
     print(f"AI providers configured: {len(configured_models)}")
     for provider, model in configured_models:
         print(f"  - {provider}/{model}")
+    for skipped in getattr(analyzer, "models_skipped", []) or []:
+        print(f"::warning::AI review skipped for {skipped['provider']}/{skipped['model']}: "
+              f"{skipped['reason']}")
     if not configured_models:
         print("::warning::No AI providers configured (no API keys found)")
 

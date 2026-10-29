@@ -17,6 +17,8 @@ import re
 import json
 import hashlib
 import concurrent.futures
+import math
+import threading
 from pathlib import Path
 from typing import Any, Optional
 from dataclasses import dataclass, field, fields as dataclass_fields
@@ -28,6 +30,20 @@ try:  # works both as a package (src.analyzer) and top-level (analyzer)
 except ImportError:  # pragma: no cover - import-path shim for test layout
     from secret_detector import detect as detect_secrets
 
+
+# Concentrate gateway (https://concentrate.ai). The endpoint is fixed so the key
+# and the diff can only go to the approved destination; there is no base-URL input.
+CONCENTRATE_BASE_URL = "https://api.concentrate.ai/v1"
+# Serving hosts a concentrate/<host>/<model> spec may pin. Zero-data-retention
+# hosts only; a model maker's own first-party host is deliberately absent.
+CONCENTRATE_HOSTS = ("deepinfra", "fireworks", "novita")
+# Reasoning models spend part of the budget thinking before they answer; at
+# 1000 tokens glm-5.3 truncated, at 4000 every probed model fit (2026-10-29).
+CONCENTRATE_MAX_TOKENS = 4000
+# Recorded when the gateway never reported which model served a call. The
+# requested spec is never written into this field in its place.
+NOT_REPORTED = "not reported"
+CONCENTRATE_MODEL_RE = re.compile(r"[A-Za-z0-9._:-]+")
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
 AI_REVIEW_ENVELOPE_KEY = "codeguard_review"
@@ -432,6 +448,7 @@ class DiffAnalyzer:
         model_2: str = None,  # Used for L2+
         model_3: str = None,  # Used for L3+
         ai_review: bool = True,  # Enable/disable AI review
+        concentrate_key: str = None,  # Concentrate gateway; models must be concentrate/<host>/<model>
     ):
         """
         Initialize analyzer with flexible multi-model configuration.
@@ -466,6 +483,13 @@ class DiffAnalyzer:
         self.ollama_host = ollama_host
         self.ollama_model = ollama_model or "llama3.3"
         self.ai_review_enabled = ai_review
+        self.concentrate_key = concentrate_key
+        # Test seam: an httpx transport for the Concentrate client. None in production.
+        self._concentrate_transport = None
+        self._concentrate_ledger: list[Optional[float]] = []
+        self._concentrate_lock = threading.Lock()
+        # Configured models that cannot run, with the reason, so reduced coverage is visible.
+        self.models_skipped: list[dict] = []
 
         # Determine which provider to use and build model list
         self.models = []  # List of (provider, model_name) tuples
@@ -478,6 +502,13 @@ class DiffAnalyzer:
                 provider, model = self._parse_model_spec(model_spec)
                 if self._provider_available(provider):
                     self.models.append((provider, model))
+                elif provider == "concentrate":
+                    # Fork and Dependabot runs get no secrets. Skip loudly, never silently.
+                    self.models_skipped.append({
+                        "provider": "concentrate",
+                        "model": model,
+                        "reason": "no Concentrate key (fork and Dependabot runs receive no secrets)",
+                    })
         else:
             # Auto-configure based on available API keys
             # Priority: OpenRouter (most flexible) > Ollama (local) > Anthropic > OpenAI
@@ -510,7 +541,12 @@ class DiffAnalyzer:
           "claude-haiku-4-5-20251001" -> ("anthropic", "claude-haiku-4-5-20251001")
               when anthropic_key is set (direct API model IDs have no slash)
           "model" -> inferred provider based on available keys
+          "concentrate/<host>/<model>" -> ("concentrate", "<host>/<model>"), always,
+              whatever other keys are set; anything else under concentrate/ is an error
         """
+        if model_spec.startswith("concentrate/"):
+            return ("concentrate", self._parse_concentrate_pin(model_spec))
+
         if "/" in model_spec:
             # Model IDs with slashes are OpenRouter format (e.g. "anthropic/claude-sonnet-4.5").
             # Route through OpenRouter when available; fall back to direct API only if
@@ -544,8 +580,22 @@ class DiffAnalyzer:
         # Fallback to ollama for unknown models
         return ("ollama", model_spec)
 
+    @staticmethod
+    def _parse_concentrate_pin(model_spec: str) -> str:
+        """Validate concentrate/<host>/<model>; return "<host>/<model>" (the gateway's pin syntax)."""
+        parts = model_spec[len("concentrate/"):].split("/")
+        if (len(parts) != 2 or parts[0] not in CONCENTRATE_HOSTS
+                or not CONCENTRATE_MODEL_RE.fullmatch(parts[1])):
+            raise ValueError(
+                f"Invalid concentrate model spec {model_spec!r}: use concentrate/<host>/<model> "
+                f"with host one of {', '.join(CONCENTRATE_HOSTS)}"
+            )
+        return f"{parts[0]}/{parts[1]}"
+
     def _provider_available(self, provider: str) -> bool:
         """Check if a provider is configured and available."""
+        if provider == "concentrate":
+            return bool(self.concentrate_key)
         if provider == "openrouter":
             return bool(self.openrouter_key)
         elif provider == "ollama":
@@ -730,6 +780,9 @@ class DiffAnalyzer:
 
         model_diff_content = ai_diff_content if ai_diff_content is not None else diff_content
 
+        with self._concentrate_lock:
+            self._concentrate_ledger = []
+
         if models_needed > 0 and self.ai_enabled:
             if deliberate and models_needed >= 2:
                 multi_review = self._run_deliberation(
@@ -741,6 +794,10 @@ class DiffAnalyzer:
                     model_diff_content, sensitive_zones, rubric, models_needed,
                     use_rubric, rubric_packs=rubric_packs
                 )
+            if self.models_skipped:
+                multi_review["models_skipped"] = list(self.models_skipped)
+            if any(p == "concentrate" for p, _ in self.models):
+                multi_review["concentrate_cost"] = self._concentrate_cost_summary()
             result.multi_model_review = multi_review
 
             # Extract top-level outputs for entrypoint.py and eval harness
@@ -768,6 +825,8 @@ class DiffAnalyzer:
                 "tier": preliminary_tier,
                 "reason": "L0 tier - rules-based only" if preliminary_tier == "L0" else "No AI providers configured"
             }
+            if self.models_skipped:
+                result.multi_model_review["models_skipped"] = list(self.models_skipped)
             result.models_used = 0
             result.consensus_risk = ""
             result.agreement_score = 0.0
@@ -1007,7 +1066,7 @@ class DiffAnalyzer:
                         "Provider review failed",
                         model_name=model,
                         provider=provider,
-                        model_id=model,
+                        model_id=self._unreported_model_id(provider, model),
                         prompt_hash=prompt_hashes.get(idx, ""),
                         response_hash="",
                         error=type(e).__name__,
@@ -1084,8 +1143,16 @@ Respond only through the required structured verdict schema:
         avg_conf = sum(r.get("confidence", 0) for r in valid) / len(valid)
         return avg_conf >= 0.85
 
+    @staticmethod
+    def _unreported_model_id(provider: str, model: str) -> str:
+        """model_id for a call that produced no response. Concentrate records that the
+        gateway reported nothing; older providers keep their v2.7.4 behaviour."""
+        return NOT_REPORTED if provider == "concentrate" else model
+
     def _call_provider(self, provider: str, model: str, prompt: str) -> tuple[str, dict]:
         """Dispatch a prompt to the appropriate provider and return (text, metadata)."""
+        if provider == "concentrate":
+            return self._call_concentrate(prompt, model)
         if provider == "ollama":
             return self._call_ollama(prompt, model)
         elif provider == "openrouter":
@@ -1154,7 +1221,7 @@ Respond only through the required structured verdict schema:
                 "Provider review failed",
                 model_name=model,
                 provider=provider,
-                model_id=model,
+                model_id=self._unreported_model_id(provider, model),
                 prompt_hash=prompt_hash,
                 response_hash="",
                 error=type(e).__name__,
@@ -1661,6 +1728,62 @@ Respond ONLY with the structured object above."""
             max_tokens=1000,
         )
         return response.choices[0].message.content, {"model_id": response.model or model}
+
+    def _record_concentrate_cost(self, header: Optional[str]) -> None:
+        """Ledger every charged attempt (all rounds, failures included). None = not reported."""
+        try:
+            cost = float(header)
+            if not math.isfinite(cost) or cost < 0:
+                cost = None
+        except (TypeError, ValueError):
+            cost = None
+        with self._concentrate_lock:
+            self._concentrate_ledger.append(cost)
+
+    def _concentrate_cost_summary(self) -> dict:
+        with self._concentrate_lock:
+            ledger = list(self._concentrate_ledger)
+        unreported = sum(1 for c in ledger if c is None)
+        total = round(sum(c for c in ledger if c is not None), 6)
+        return {
+            "calls": len(ledger),
+            "unreported_calls": unreported,
+            # A missing charge makes the total unknown; it is never counted as zero.
+            "total_usd": "unknown" if unreported else total,
+        }
+
+    def _call_concentrate(self, prompt: str, model: str) -> tuple[str, dict]:
+        """Call the Concentrate gateway (OpenAI-compatible) and return (text, metadata)."""
+        import httpx
+        import openai
+
+        # Redirects are refused: httpx keeps the request body across a 307/308, so
+        # following one could forward the diff to another origin.
+        http = httpx.Client(follow_redirects=False, timeout=httpx.Timeout(180.0),
+                            transport=self._concentrate_transport)
+        try:
+            client = openai.OpenAI(api_key=self.concentrate_key, base_url=CONCENTRATE_BASE_URL,
+                                   http_client=http, max_retries=0)
+            try:
+                raw = client.chat.completions.with_raw_response.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=CONCENTRATE_MAX_TOKENS,
+                    response_format=self._openai_review_response_format(),
+                )
+            except openai.APIStatusError as e:
+                self._record_concentrate_cost(e.response.headers.get("x-concentrate-cost"))
+                raise
+            except Exception:
+                self._record_concentrate_cost(None)  # charge, if any, is unknown
+                raise
+            self._record_concentrate_cost(raw.headers.get("x-concentrate-cost"))
+            response = raw.parse()
+            text = response.choices[0].message.content
+            reported = getattr(response, "model", None) or NOT_REPORTED
+            return text, {"model_id": reported}
+        finally:
+            http.close()
 
     def _call_openrouter(self, prompt: str, model: str) -> tuple[str, dict]:
         """Call OpenRouter API and return (text, metadata)."""
