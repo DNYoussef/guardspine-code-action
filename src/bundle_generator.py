@@ -165,9 +165,17 @@ class BundleGenerator:
                 "model_id": r.get("model_id", r.get("model_name", "")),
                 "prompt_hash": r.get("prompt_hash", ""),
                 "response_hash": r.get("response_hash", ""),
+                # Concentrate entries also seal what was observed about serving and
+                # whether the attempt failed; other providers keep the v2.7.4 shape.
+                **({"serving_host": r.get("serving_host", "not exposed"),
+                    # Same rule as DiffAnalyzer._review_failed.
+                    "failed": bool(r.get("error") or r.get("parse_error") or r.get("schema_error"))}
+                   if r.get("provider") == "concentrate" else {}),
             }
             for r in (mmr.get("reviews") or [])
-            if not r.get("error")
+            # Failed Concentrate attempts are sealed too, so their identity is in
+            # the hash chain; legacy providers keep sealing successes only.
+            if not r.get("error") or r.get("provider") == "concentrate"
         ]
 
         # Event 2: Analysis Completed

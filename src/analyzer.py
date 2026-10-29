@@ -43,6 +43,9 @@ CONCENTRATE_MAX_TOKENS = 4000
 # Recorded when the gateway never reported which model served a call. The
 # requested spec is never written into this field in its place.
 NOT_REPORTED = "not reported"
+# Concentrate does not tell us which host served a call, only the model string.
+# The pinned host in model_name is what we ASKED for; this records what we SAW.
+NOT_EXPOSED = "not exposed"
 CONCENTRATE_MODEL_RE = re.compile(r"[A-Za-z0-9._:-]+")
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
@@ -1021,13 +1024,13 @@ class DiffAnalyzer:
                 try:
                     reviews[idx] = future.result()
                 except Exception as e:
-                    reviews[idx] = self._fail_closed_review(
+                    reviews[idx] = self._with_serving_host(self._fail_closed_review(
                         "Provider review failed",
                         model_name=model,
                         provider=provider,
                         error=type(e).__name__,
                         **({"model_id": NOT_REPORTED} if provider == "concentrate" else {}),
-                    )
+                    ), provider, {})
         return [r for r in reviews if r is not None]
 
     def _parallel_crosscheck(
@@ -1055,6 +1058,7 @@ class DiffAnalyzer:
 
             for future in concurrent.futures.as_completed(future_to_idx):
                 idx, provider, model = future_to_idx[future]
+                meta: dict = {}
                 try:
                     raw, meta = future.result()
                     parsed = self._parse_review_response(raw)
@@ -1064,17 +1068,17 @@ class DiffAnalyzer:
                     parsed["prompt_hash"] = prompt_hashes[idx]
                     parsed["response_hash"] = f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}"
                     parsed["raw_response"] = raw[:500]
-                    reviews[idx] = parsed
+                    reviews[idx] = self._with_serving_host(parsed, provider, meta)
                 except Exception as e:
-                    reviews[idx] = self._fail_closed_review(
+                    reviews[idx] = self._with_serving_host(self._fail_closed_review(
                         "Provider review failed",
                         model_name=model,
                         provider=provider,
-                        model_id=self._unreported_model_id(provider, model),
+                        model_id=self._failed_model_id(provider, model, meta),
                         prompt_hash=prompt_hashes.get(idx, ""),
                         response_hash="",
                         error=type(e).__name__,
-                    )
+                    ), provider, meta)
         return [r for r in reviews if r is not None]
 
     def _build_crosscheck_prompt(
@@ -1159,6 +1163,20 @@ Respond only through the required structured verdict schema:
             }
         return result
 
+    @classmethod
+    def _failed_model_id(cls, provider: str, model: str, meta: dict) -> str:
+        """model_id for a failed review. A Concentrate response that arrived keeps the
+        model the gateway reported even when processing it failed afterwards."""
+        if provider == "concentrate" and meta.get("model_id"):
+            return meta["model_id"]
+        return cls._unreported_model_id(provider, model)
+
+    @staticmethod
+    def _with_serving_host(review: dict, provider: str, meta: dict) -> dict:
+        if provider == "concentrate":
+            review["serving_host"] = meta.get("serving_host") or NOT_EXPOSED
+        return review
+
     @staticmethod
     def _unreported_model_id(provider: str, model: str) -> str:
         """model_id for a call that produced no response. Concentrate records that the
@@ -1219,6 +1237,7 @@ Respond only through the required structured verdict schema:
             rubric_packs=rubric_packs)
         prompt_hash = f"sha256:{hashlib.sha256(prompt.encode('utf-8')).hexdigest()}"
 
+        meta: dict = {}
         try:
             response, meta = self._call_provider(provider, model, prompt)
 
@@ -1230,18 +1249,18 @@ Respond only through the required structured verdict schema:
             parsed["prompt_hash"] = prompt_hash
             parsed["response_hash"] = f"sha256:{hashlib.sha256(response.encode('utf-8')).hexdigest()}"
             parsed["raw_response"] = response[:500]  # Truncate for storage
-            return parsed
+            return self._with_serving_host(parsed, provider, meta)
 
         except Exception as e:
-            return self._fail_closed_review(
+            return self._with_serving_host(self._fail_closed_review(
                 "Provider review failed",
                 model_name=model,
                 provider=provider,
-                model_id=self._unreported_model_id(provider, model),
+                model_id=self._failed_model_id(provider, model, meta),
                 prompt_hash=prompt_hash,
                 response_hash="",
                 error=type(e).__name__,
-            )
+            ), provider, meta)
 
     def _build_review_prompt(
         self, diff_content: str, sensitive_zones: list,
@@ -1447,7 +1466,7 @@ Respond ONLY with the structured object above."""
                 schema_error=True,
                 raw_response=raw_response[:500],
             )
-        if risk_assessment not in AI_REVIEW_RISK_ASSESSMENTS:
+        if not isinstance(risk_assessment, str) or risk_assessment not in AI_REVIEW_RISK_ASSESSMENTS:
             return self._fail_closed_review(
                 "AI review output rejected: risk_assessment is not allowed",
                 schema_error=True,
@@ -1800,7 +1819,7 @@ Respond ONLY with the structured object above."""
             text = choice.message.content if choice is not None and choice.message is not None else None
             # Null or missing content is a failed review, not a lost identity: the
             # strict parser rejects "" fail-closed and the reported model is kept.
-            return (text if isinstance(text, str) else ""), {"model_id": reported}
+            return (text if isinstance(text, str) else ""), {"model_id": reported, "serving_host": NOT_EXPOSED}
         finally:
             http.close()
 

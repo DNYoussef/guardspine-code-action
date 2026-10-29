@@ -620,3 +620,91 @@ def test_the_alias_check_rejects_each_restored_rule(mutation):
     assert wf.count(old) == 1
     bad = wf.replace(old, new)
     assert any(_simulated_metadata_tags(bad, ref) & FLOATING for ref in EVENTS)
+
+
+# ----------------------------------------- sealed provenance on every failure path
+
+OTHER = "deepinfra/glm-5.3"
+
+
+def _gateway_returning(content, model=OTHER):
+    def gateway(request):
+        body = {"id": "x", "object": "chat.completion", "created": 0,
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant", "content": content}}]}
+        if model is not None:
+            body["model"] = model
+        return httpx.Response(200, json=body, headers={"x-concentrate-cost": "0.001"})
+    return gateway
+
+
+def _bad_verdict():
+    data = json.loads(_review_json())
+    data[AI_REVIEW_ENVELOPE_KEY]["risk_assessment"] = []
+    return json.dumps(data)
+
+
+CASES = {
+    "http-500": (Gateway("500"), "not reported", True),
+    "timeout": (Gateway("timeout"), "not reported", True),
+    "no-model": (Gateway("ok-no-model"), "not reported", False),
+    "null-content": (_gateway_returning(None), OTHER, True),
+    "bad-verdict": (_gateway_returning(_bad_verdict()), OTHER, True),
+    "success": (_gateway_returning(_review_json()), OTHER, False),
+}
+
+
+def _bundle_for(gateway):
+    from src.bundle_generator import BundleGenerator
+    a = _analyzer(gateway)
+    result = a.analyze(DIFF, tier_override="L1")
+    bundle = BundleGenerator().create_bundle(pr=_pr(), analysis=result, risk_result={
+        "risk_tier": "L1", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "r"},
+        repository="o/r", commit_sha="abc1234")
+    sealed = next(e for e in bundle["events"] if e["event_type"] == "analysis_completed")["data"]["reviews_sealed"]
+    snapshot = bundle["analysis_snapshot"]["multi_model_review"]["reviews"]
+    return sealed, snapshot
+
+
+@pytest.mark.parametrize("case", list(CASES))
+def test_sealed_entry_and_snapshot_each_carry_honest_identity(case):
+    gateway, expected_id, failed = CASES[case]
+    sealed, snapshot = _bundle_for(gateway)
+    (entry,) = sealed
+    assert entry["provider"] == "concentrate" and entry["model_name"] == PINNED
+    assert entry["model_id"] == expected_id
+    assert entry["serving_host"] == "not exposed"
+    assert entry["failed"] is failed
+    (review,) = snapshot
+    assert review["model_id"] == expected_id and review["serving_host"] == "not exposed"
+
+
+def test_malformed_verdict_keeps_identity_in_crosscheck_too():
+    a = _analyzer(_gateway_returning(_bad_verdict()))
+    prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+    (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    assert cross["model_id"] == OTHER and cross["serving_host"] == "not exposed"
+    assert cross.get("schema_error")
+
+
+def test_legacy_failed_reviews_are_still_not_sealed():
+    from src.bundle_generator import BundleGenerator
+    a = DiffAnalyzer(openrouter_key="k", model_1="anthropic/claude-sonnet-4.5")
+    with patch.object(a, "_call_openrouter", side_effect=RuntimeError("down")):
+        result = a.analyze(DIFF, tier_override="L1")
+    bundle = BundleGenerator().create_bundle(pr=_pr(), analysis=result, risk_result={
+        "risk_tier": "L1", "risk_drivers": [], "findings": [], "scores": {}, "rationale": "r"},
+        repository="o/r", commit_sha="abc1234")
+    sealed = next(e for e in bundle["events"] if e["event_type"] == "analysis_completed")["data"]["reviews_sealed"]
+    assert sealed == []
+
+
+def test_any_failure_after_the_response_keeps_the_reported_identity():
+    # Force processing to raise after the gateway has answered, on both review paths.
+    a = _analyzer(_gateway_returning(_review_json()))
+    with patch.object(a, "_parse_review_response", side_effect=RuntimeError("late failure")):
+        review = a.analyze(DIFF, tier_override="L1")["multi_model_review"]["reviews"][0]
+        prev = [{"summary": "s", "concerns": [], "risk_assessment": "approve", "model_name": PINNED}]
+        (cross,) = a._parallel_crosscheck([("concentrate", PINNED)], prev, DIFF, round_num=2)
+    for r in (review, cross):
+        assert r.get("error") and r["model_id"] == OTHER and r["serving_host"] == "not exposed"
