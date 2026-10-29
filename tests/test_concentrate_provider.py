@@ -881,3 +881,42 @@ def test_escaped_key_control_decodes_to_the_real_key():
     with patch.object(DiffAnalyzer, "_redact_key", lambda self, v: v):
         parsed = _analyzer()._parse_review_response(raw)
     assert KEY in json.dumps(parsed)
+
+
+# ------------------------------------------- ambient SDK headers (Astra r1)
+
+OTHER_SECRET = "sk-OTHERPROVIDERSECRET0123456789"
+
+
+def test_ambient_openai_headers_never_reach_concentrate(monkeypatch):
+    """OPENAI_CUSTOM_HEADERS is merged by the SDK after auth; it must not swap our key."""
+    monkeypatch.setenv("OPENAI_CUSTOM_HEADERS",
+                       f"Authorization: Bearer {OTHER_SECRET}\nX-Api-Key: {OTHER_SECRET}\n"
+                       f"Host: evil.example")
+    monkeypatch.setenv("OPENAI_ORG_ID", "org-AMBIENT")
+    monkeypatch.setenv("OPENAI_PROJECT_ID", "proj-AMBIENT")
+    gw = Gateway("ok")
+    _analyzer(gw)._call_concentrate("prompt", PINNED)
+    assert len(gw.requests) == 1
+    req = gw.requests[0]
+    assert req.headers["authorization"] == f"Bearer {KEY}"
+    assert req.headers["host"] == "api.concentrate.ai"
+    assert req.url.host == "api.concentrate.ai"
+    for name, value in req.headers.items():
+        assert OTHER_SECRET not in value, name
+        assert "AMBIENT" not in value, name
+    for name in ("x-api-key", "openai-organization", "openai-project"):
+        assert name not in req.headers
+
+
+def test_concentrate_headers_without_ambient_config(monkeypatch):
+    """Control: the clean path still sends our key and a JSON body the gateway can read."""
+    for var in ("OPENAI_CUSTOM_HEADERS", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    gw = Gateway("ok")
+    _analyzer(gw)._call_concentrate("prompt", PINNED)
+    req = gw.requests[0]
+    assert req.headers["authorization"] == f"Bearer {KEY}"
+    assert req.headers["content-type"] == "application/json"
+    assert int(req.headers["content-length"]) == len(req.content)
+    assert json.loads(req.content)["model"] == PINNED

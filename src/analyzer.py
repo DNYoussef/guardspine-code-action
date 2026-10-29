@@ -48,6 +48,13 @@ NOT_REPORTED = "not reported"
 # The pinned host in model_name is what we ASKED for; this records what we SAW.
 NOT_EXPOSED = "not exposed"
 CONCENTRATE_MODEL_RE = re.compile(r"[A-Za-z0-9._:-]+")
+# Headers httpx and the SDK may set on a Concentrate request. Everything else is
+# dropped: the SDK merges OPENAI_CUSTOM_HEADERS, OPENAI_ORG_ID and
+# OPENAI_PROJECT_ID from the environment after auth, which could swap our key.
+# x-stainless-raw-response must survive: the SDK reads it back off the request to
+# decide whether with_raw_response returns the raw envelope.
+CONCENTRATE_PASS_HEADERS = ("accept", "accept-encoding", "connection", "user-agent",
+                            "x-stainless-raw-response")
 
 
 def _silence_sdk_debug_logging() -> None:
@@ -1851,6 +1858,22 @@ Respond ONLY with the structured object above."""
             return {k: self._redact_parsed(v) for k, v in value.items()}
         return value
 
+    def _pin_concentrate_headers(self, request) -> None:
+        """Rebuild the outgoing headers so ambient SDK config can neither replace
+        the Concentrate key nor ride along to the gateway. Done per client, not by
+        editing os.environ, so concurrent legacy providers keep their config."""
+        import httpx
+
+        body = request.read()
+        headers = {k: v for k, v in request.headers.items() if k.lower() in CONCENTRATE_PASS_HEADERS}
+        headers.update({
+            "Host": request.url.netloc.decode("ascii"),
+            "Authorization": f"Bearer {self.concentrate_key}",
+            "Content-Type": "application/json",
+            "Content-Length": str(len(body)),
+        })
+        request.headers = httpx.Headers(headers)
+
     def _call_concentrate(self, prompt: str, model: str) -> tuple[str, dict]:
         """Call the Concentrate gateway (OpenAI-compatible) and return (text, metadata)."""
         _silence_sdk_debug_logging()
@@ -1860,7 +1883,8 @@ Respond ONLY with the structured object above."""
         # Redirects are refused: httpx keeps the request body across a 307/308, so
         # following one could forward the diff to another origin.
         http = httpx.Client(follow_redirects=False, timeout=httpx.Timeout(180.0),
-                            transport=self._concentrate_transport)
+                            transport=self._concentrate_transport,
+                            event_hooks={"request": [self._pin_concentrate_headers]})
         try:
             client = openai.OpenAI(api_key=self.concentrate_key, base_url=CONCENTRATE_BASE_URL,
                                    http_client=http, max_retries=0)
