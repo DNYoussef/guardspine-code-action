@@ -358,6 +358,33 @@ Requires `contents: write` permission on the workflow.
 
 ## Advanced Usage
 
+### Recording Human Approvals
+
+Each bundle has a `human_review` block with the commit analyzed and a status:
+`recorded`, `none` or `unavailable` (the review lookup failed). Every approver also gets a sealed
+`approval_granted` event naming the review and the commit it approved. Only a
+person's current approval of the commit this run analyzed counts. Bots, the PR
+author, withdrawn approvals and approvals of other commits don't. If the PR's head
+moves during the run, or the analyzed diff doesn't match that commit (including
+diffs too large for one API response), the status is `unavailable`. PII-Shield
+leaves approver logins in place, since naming them is the point of the record.
+
+A `pull_request` run usually happens before anyone has approved, so also run on
+approvals. This runs the full analysis again, including any AI review you've
+configured, and the `if` limits that to approvals. Review runs never auto-merge,
+even with `auto_merge` on:
+
+```yaml
+on:
+  pull_request:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  analyze:
+    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
+```
+
 ### Custom Risk Threshold per Branch
 
 ```yaml

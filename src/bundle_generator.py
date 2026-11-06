@@ -96,6 +96,8 @@ class BundleGenerator:
         allow_insecure_signature_fallback: bool = False,
         id_nonce: str = "",
         governance: dict | None = None,
+        approvals: list[dict] | None = None,
+        human_review: dict | None = None,
     ) -> dict[str, Any]:
         """
         Create a complete evidence bundle for a PR.
@@ -107,6 +109,10 @@ class BundleGenerator:
             repository: Repository name (owner/repo)
             commit_sha: Commit SHA being analyzed
             approvers: List of approver usernames (optional)
+            approvals: Approval records with "login" plus details to seal in the
+                event, as returned by collect_human_approvals (optional)
+            human_review: Fields for a top-level human_review block, such as
+                status and analyzed_head. Approvers are added to it (optional)
             attestation_key: Private key for signing (optional)
             attestation_key_id: Overrides the signature's public_key_id (optional).
                 Default (unset) embeds the sha256 fingerprint of the DER-encoded
@@ -206,19 +212,21 @@ class BundleGenerator:
         self.events.append(risk_event)
 
         # Event 4: Approval (if approvers provided)
-        if approvers:
-            for approver in approvers:
-                approval_event = BundleEvent(
-                    event_type="approval_granted",
-                    timestamp=created_at,
-                    actor=approver,
-                    data={
-                        "risk_tier_at_approval": risk_result.get("risk_tier", "L2"),
-                        "commit_sha": commit_sha,
-                    }
-                )
-                previous_hash = approval_event.compute_hash(previous_hash)
-                self.events.append(approval_event)
+        approval_records = [{"login": a} for a in approvers or []] + list(approvals or [])
+        for record in approval_records:
+            details = {k: v for k, v in record.items() if k != "login"}
+            approval_event = BundleEvent(
+                event_type="approval_granted",
+                timestamp=created_at,
+                actor=record["login"],
+                data={
+                    "risk_tier_at_approval": risk_result.get("risk_tier", "L2"),
+                    "commit_sha": commit_sha,
+                    **details,
+                }
+            )
+            previous_hash = approval_event.compute_hash(previous_hash)
+            self.events.append(approval_event)
 
         # Build complete bundle
         v020_items = self._build_v020_items()
@@ -282,6 +290,11 @@ class BundleGenerator:
             bundle["analysis_snapshot"].pop("review_coverage")
         if governance is not None:
             bundle["governance"] = governance
+        if human_review is not None:
+            bundle["human_review"] = {
+                **human_review,
+                "approvers": [r["login"] for r in approval_records],
+            }
 
         # Seal as the final step: whole-bundle hash + optional signature.
         self.seal_bundle(
@@ -721,7 +734,7 @@ def verify_bundle_chain(
     # a bare event-only legacy bundle (none of these fields) verifies on the event
     # chain alone.
     _rich = ("items", "immutability_proof", "summary", "analysis_snapshot",
-             "context", "sanitization")
+             "context", "sanitization", "human_review")
     requires_seal = (
         str(bundle.get("version", "")).startswith("0.2")
         or str(bundle.get("guardspine_spec_version", "")).startswith("0.2")
