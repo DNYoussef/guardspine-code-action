@@ -571,6 +571,23 @@ def main():
         print(f"::error::Risk policy file not found: {risk_policy_path}")
         sys.exit(1)
 
+    # Load event data
+    with open(get_env("GITHUB_EVENT_PATH")) as f:
+        event = json.load(f)
+
+    # GITHUB_BASE_REF is only set on pull_request events, and it is what keeps a
+    # PR from supplying its own rubric. A pull_request_review run must not lose
+    # that protection, so take the base ref from the event before any rubric is
+    # resolved, and stop if there isn't one. Never override the runner's value.
+    is_review_event = get_env("GITHUB_EVENT_NAME") == "pull_request_review"
+    event_pr = event.get("pull_request", {})
+    event_base_ref = event_pr.get("base", {}).get("ref")
+    if event_base_ref and not get_env("GITHUB_BASE_REF"):
+        os.environ["GITHUB_BASE_REF"] = event_base_ref
+    if is_review_event and not get_env("GITHUB_BASE_REF"):
+        print("::error::pull_request_review event has no base ref; refusing to trust the checkout's policy")
+        sys.exit(1)
+
     # On a pull request an unresolvable rubric raises RubricUnavailableError
     # (caught at the boundary below) instead of returning None, so there is no
     # longer a "fall back to default" branch here -- governing with a policy
@@ -581,7 +598,6 @@ def main():
         sys.exit(1)
 
     # GitHub context
-    github_event_path = get_env("GITHUB_EVENT_PATH")
     github_repository = get_env("GITHUB_REPOSITORY")
     github_sha = get_env("GITHUB_SHA")
     github_ref = get_env("GITHUB_REF")
@@ -589,10 +605,6 @@ def main():
     if not github_token:
         print("::error::GitHub token is required")
         sys.exit(1)
-
-    # Load event data
-    with open(github_event_path) as f:
-        event = json.load(f)
 
     # Get PR number
     pr_number = event.get("pull_request", {}).get("number")
@@ -614,6 +626,9 @@ def main():
     gh = Github(auth=Auth.Token(github_token))
     repo = gh.get_repo(github_repository)
     pr = repo.get_pull(pr_number)
+    # Approvals only count for the commit this run analyzes. Captured before the
+    # diff is fetched and rechecked after the reviews are read.
+    analyzed_head = event_pr.get("head", {}).get("sha") or pr.head.sha
 
     # Get diff
     print("::group::Fetching PR diff")
@@ -869,6 +884,23 @@ def main():
         # bundle_id and a backend that rejects duplicate imports (409) refuses
         # every run after the first. See BundleGenerator._generate_bundle_id.
         bundle_id_nonce = os.environ.get("GUARDSPINE_BUNDLE_NONCE", "")
+        approvals, human_review_status = collect_human_approvals(
+            repo, pr_number, analyzed_head, raw_diff_content,
+        )
+        # Same commit, new review: without these the bundle_id repeats and a
+        # backend that rejects duplicates refuses the record. A PR run with no
+        # approvals keeps its old bundle_id.
+        review_run = ":".join(str(part) for part in (
+            event.get("review", {}).get("id"),
+            get_env("GITHUB_RUN_ID"),
+            get_env("GITHUB_RUN_ATTEMPT"),
+        ) if part) if is_review_event else ""
+        approval_ids = ",".join(sorted(str(a["review_id"]) for a in approvals))
+        bundle_id_nonce = "/".join(part for part in (
+            bundle_id_nonce,
+            f"review:{review_run}" if review_run else "",
+            f"approvals:{approval_ids}" if approval_ids else "",
+        ) if part)
         if sanitization_summary:
             analysis["sanitization"] = dict(sanitization_summary)
         bundle = generator.create_bundle(
@@ -881,6 +913,8 @@ def main():
             attestation_key_id=attestation_key_id,
             id_nonce=bundle_id_nonce,
             governance=build_governance_record(classifier, rubric_input=rubric),
+            approvals=approvals,
+            human_review={"status": human_review_status, "analyzed_head": analyzed_head},
         )
 
         if sanitization_summary:
@@ -890,10 +924,12 @@ def main():
 
         if pii_shield_enabled and pii_shield_sanitize_bundle:
             try:
+                unsanitized_bundle = bundle
                 bundle, bundle_result = pii_client.sanitize_json_document(
                     bundle,
                     purpose="evidence_bundle",
                 )
+                _restore_approval_records(bundle, unsanitized_bundle)
                 sanitization_summary = _record_sanitization_stage(
                     sanitization_summary,
                     "evidence_bundle",
@@ -1038,7 +1074,11 @@ def main():
             sys.exit(1)
     else:
         print(f"::notice::Decision Engine: MERGE - clean to merge (risk tier {risk_tier})")
-        if auto_merge and risk_tier != "L4":
+        if auto_merge and is_review_event:
+            # A review run only records the approval. It must not start merging
+            # PRs that the pull_request run couldn't.
+            print("::notice::Skipping auto-merge: pull_request_review run")
+        elif auto_merge and risk_tier != "L4":
             if fail_on_dashboard_sync_error and dashboard_sync_failed:
                 # Do not merge a PR whose governance record never landed; the
                 # fatal gate below will fail this run.
@@ -1163,6 +1203,97 @@ def group_files_by_lane(filenames: list[str]) -> dict[Optional[str], list[str]]:
         lane = detect_guard_lane(name)
         groups.setdefault(lane, []).append(name)
     return groups
+
+
+def _diff_is_of_commit(repo, base_sha: str, head_sha: str, analyzed_diff: str) -> bool:
+    """True if the analyzed diff is exactly the diff of head_sha.
+
+    The analysis reads a mutable PR endpoint. This compares its text with the same
+    diff fetched by commit ID, which can't move. A diff too large to compare, or
+    from the per-file fallback, fails this check, and approvals read as unavailable.
+    """
+    import requests
+
+    headers = {"Accept": "application/vnd.github.diff"}
+    token = os.environ.get("INPUT_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    response = requests.get(
+        f"{repo.url}/compare/{base_sha}...{head_sha}", headers=headers, timeout=30,
+    )
+    return response.ok and response.text == analyzed_diff
+
+
+def _restore_approval_records(sanitized: dict, original: dict) -> None:
+    """Put approval records back after PII sanitization.
+
+    The engine reads a GitHub login like "david-youssef" as a name and hides it, and
+    naming who approved is the point of the record.
+    """
+    if "human_review" in original:
+        sanitized["human_review"] = original["human_review"]
+    for key, event_of in (("events", lambda r: r), ("items", lambda r: r.get("content", {}))):
+        for index, record in enumerate(original.get(key) or []):
+            if event_of(record).get("event_type") == "approval_granted":
+                sanitized[key][index] = record
+
+
+def collect_human_approvals(
+    repo, pr_number: int, head_sha: str, analyzed_diff: str,
+) -> tuple[list[dict], str]:
+    """Return the humans whose current position approves head_sha.
+
+    A person's latest APPROVED, CHANGES_REQUESTED or DISMISSED review is their
+    position; a comment doesn't change it. An approval of another commit isn't an
+    approval of this one. If the PR's head has moved since head_sha was captured,
+    or analyzed_diff isn't that commit's diff, nothing is recorded. Status is
+    "recorded", "none" or "unavailable", so a failed lookup can never read as
+    "nobody approved".
+
+    Uses its own PR lookup: the caller's pr object must keep the analyzed head,
+    because auto-merge merges that head.
+    """
+    try:
+        pr = repo.get_pull(pr_number)
+        author = pr.user.login if pr.user else None
+        decisive = [
+            r for r in pr.get_reviews()
+            if r.user and r.submitted_at
+            and r.state in ("APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+        ]
+        current = {r.user.login: r for r in sorted(decisive, key=lambda r: r.submitted_at)}
+        approvals = [
+            {
+                "login": login,
+                "review_id": r.id,
+                "commit_sha": r.commit_id,
+                "approved_at": r.submitted_at.isoformat(),
+            }
+            for login, r in sorted(current.items())
+            if r.state == "APPROVED" and r.commit_id == head_sha
+            and r.user.type == "User" and login != author
+        ]
+        if approvals and not _diff_is_of_commit(repo, pr.base.sha, head_sha, analyzed_diff):
+            print(
+                "::warning::The analyzed diff doesn't match the approved commit; "
+                "the evidence bundle records human approvals as unavailable."
+            )
+            return [], "unavailable"
+        # Last, on a fresh lookup, so a push during the requests above is caught.
+        if repo.get_pull(pr_number).head.sha != head_sha:
+            print(
+                "::warning::The PR's head moved during this run; "
+                "the evidence bundle records human approvals as unavailable."
+            )
+            return [], "unavailable"
+    except Exception as exc:
+        # Type name only: API error text can carry request details.
+        print(
+            f"::warning::Could not read PR reviews ({type(exc).__name__}); "
+            "the evidence bundle records human approvals as unavailable."
+        )
+        return [], "unavailable"
+    return approvals, "recorded" if approvals else "none"
 
 
 def fetch_pr_diff(pr: PullRequest) -> str:
