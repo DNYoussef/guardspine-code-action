@@ -65,6 +65,21 @@ jobs:
           path: .guardspine/bundles/
 ```
 
+> **Pin this action by commit SHA.** The examples above use a moving tag for
+> readability, but this step receives your API keys. A moving tag (`@v1`,
+> `@v2`, `@v2.2.0`) resolves to whatever that ref points at when the workflow
+> runs, so anyone who can move the tag — or push a new image to the matching
+> registry tag — can read every secret passed to the step. Note that the
+> examples already pin `actions/checkout` and `actions/upload-artifact` by SHA;
+> apply the same rule here, because this is the step holding the credentials:
+>
+> ```yaml
+> - uses: DNYoussef/guardspine-code-action@<full-40-char-commit-sha> # v2.x.y
+> ```
+>
+> This follows [GitHub's hardening guidance](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions#using-third-party-actions).
+> Dependabot updates SHA pins and keeps the trailing version comment current.
+
 **3. Open a PR.** You will see a Decision Card comment with the verdict (merge / merge-with-conditions / block), risk tier, and findings. The evidence bundle appears in workflow artifacts.
 
 **Verify a bundle locally** (optional):
