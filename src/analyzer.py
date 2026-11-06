@@ -123,6 +123,63 @@ UNSUPPORTED_SCHEMA_KEYWORDS = frozenset({
 _SCHEMA_NAME_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
 
 
+def review_failed(review: dict) -> bool:
+    """Did this reviewer fail to produce a usable verdict?
+
+    THE definition, at module level so every consumer shares one. There were
+    three: this one, and `not review.get("error")` in two other places, which
+    is narrower -- it catches a provider outage but not a review whose ANSWER
+    was rejected. A schema-rejected review was therefore counted failed for
+    models_used and simultaneously successful when picking the summary, when
+    voting for an early exit, and when sealing review provenance into the
+    evidence bundle. A bundle could state models_failed 1 while sealing one
+    completed review, so its own numbers disagreed with each other.
+    """
+    return bool(
+        review.get("error") or review.get("parse_error") or review.get("schema_error")
+    )
+
+
+def format_review_diagnostics(configured: int, mmr: dict) -> list[str]:
+    """The reviewer numbers, stated so they reconcile.
+
+    The log printed "configured: 3" on one line and "used: 2, failed: 0" on
+    another. Those come from different denominators -- configured counts the
+    models with credentials, used and failed count the ones the TIER asked for
+    -- so subtracting across them finds a reviewer that was never missing.
+    Saying how many were requested closes it, and a real shortfall
+    (requested > used + failed) is called out rather than left to arithmetic.
+
+    A module function, not a method: it needs nothing from an analyzer, and
+    hanging it off the class coupled every test that stubs DiffAnalyzer to it.
+    """
+    used = int(mmr.get("models_used", 0) or 0)
+    failed = int(mmr.get("models_failed", 0) or 0)
+    attempted = int(mmr.get("models_attempted", used + failed) or 0)
+    requested = int(mmr.get("models_requested", attempted) or 0)
+
+    lines = [
+        f"AI reviewers: the tier asked for {requested}, "
+        f"attempted {attempted}, used {used}, failed {failed}"
+    ]
+
+    # The shortfall that matters most, and the one the numbers hid. A tier
+    # asking for three reviewers while only one is configured is a review that
+    # did not happen as specified, and it used to read as complete coverage
+    # because every count downstream was taken from the attempt.
+    if attempted < requested:
+        lines.append(
+            f"::warning::the risk tier asked for {requested} reviewer(s) but only "
+            f"{attempted} could be attempted ({configured} configured); "
+            "this change was reviewed less than its tier requires"
+        )
+    if used + failed < attempted:
+        lines.append(
+            f"::warning::{attempted - used - failed} attempted reviewer(s) unaccounted for"
+        )
+    return lines
+
+
 def wire_schema(node):
     """Deep-copy a schema into the subset structured-output backends accept.
 
@@ -753,22 +810,32 @@ class DiffAnalyzer:
             result.agreement_score = consensus.get("agreement_score") or 0.0
 
             # Legacy compatibility: also include ai_summary from first model
-            successful = [r for r in multi_review.get("reviews", []) if not r.get("error")]
-            if successful:
-                first_review = successful[0]
+            source = self._pick_ai_summary_source(multi_review.get("reviews", []))
+            if source:
                 result.ai_summary = {
-                    "summary": first_review.get("summary", ""),
-                    "intent": first_review.get("intent", ""),
-                    "concerns": first_review.get("concerns", []),
+                    "summary": source.get("summary", ""),
+                    "intent": source.get("intent", ""),
+                    "concerns": source.get("concerns", []),
                 }
         else:
+            # Two different situations wear this branch, and only one of them
+            # is fine. L0 wants no AI review, so nothing is missing. "No AI
+            # providers configured" on a tier that DOES want review is total
+            # review loss, and it used to leave review_coverage at the
+            # dataclass default -- attempted 0, complete True -- so it read as
+            # a clean, fully covered review. Zero attempts is not coverage.
+            wanted = self.TIER_MODEL_COUNT.get(preliminary_tier, 1) if self.ai_enabled else 0
             result.multi_model_review = {
                 "reviews": [],
                 "models_used": 0,
+                "models_failed": 0,
+                "models_requested": wanted,
+                "models_attempted": 0,
                 "tier": preliminary_tier,
                 "reason": "L0 tier - rules-based only" if preliminary_tier == "L0" else "No AI providers configured"
             }
             result.models_used = 0
+            result.review_coverage = self._review_coverage([], wanted)
             result.consensus_risk = ""
             result.agreement_score = 0.0
 
@@ -873,12 +940,22 @@ class DiffAnalyzer:
             "reviews": reviews,
             "models_used": len(successful_reviews),
             "models_failed": len(failed_reviews),
+            # TWO numbers, because there are two facts and collapsing them
+            # loses one. models_requested is what the TIER demanded;
+            # models_attempted is how many we could actually reach. An earlier
+            # revision reported models_to_use as the request so that
+            # used + failed would reconcile, which did make the arithmetic
+            # tidy -- by deleting the only record that the tier ever asked for
+            # more. Configure one model, run an L4 review that wants three,
+            # and it reported requested 1, used 1, complete: fully covered,
+            # two reviewers missing and nothing saying so.
             "models_requested": models_needed,
+            "models_attempted": models_to_use,
             "model_errors": [
                 f"{r.get('provider')}/{r.get('model_name')}: {self._error_type(r)}"
                 for r in failed_reviews
             ],
-            "review_coverage": self._review_coverage(reviews),
+            "review_coverage": self._review_coverage(reviews, models_needed),
             "used_rubric": use_rubric,
             "rubric_name": rubric if use_rubric else None,
             "consensus": consensus,
@@ -914,7 +991,8 @@ class DiffAnalyzer:
         if self._should_exit_early(r1_reviews, r1_consensus):
             return self._pack_deliberation_result(
                 providers, r1_reviews, [r1_reviews], r1_consensus,
-                use_rubric, rubric, early_exit=True)
+                use_rubric, rubric, early_exit=True,
+                models_needed=models_needed)
 
         # Round 2: cross-check (each model sees others' Round 1 findings)
         r2_reviews = self._parallel_crosscheck(
@@ -925,7 +1003,8 @@ class DiffAnalyzer:
         if len(providers) <= 2:
             return self._pack_deliberation_result(
                 providers, r2_reviews, [r1_reviews, r2_reviews],
-                r2_consensus, use_rubric, rubric)
+                r2_consensus, use_rubric, rubric,
+                models_needed=models_needed)
 
         # Round 3 (L3 only): final refinement
         r3_reviews = self._parallel_crosscheck(
@@ -935,7 +1014,8 @@ class DiffAnalyzer:
 
         return self._pack_deliberation_result(
             providers, r3_reviews, [r1_reviews, r2_reviews, r3_reviews],
-            r3_consensus, use_rubric, rubric)
+            r3_consensus, use_rubric, rubric,
+            models_needed=models_needed)
 
     def _parallel_review(
         self, providers: list[tuple[str, str]],
@@ -1021,8 +1101,16 @@ class DiffAnalyzer:
     ) -> str:
         """Build the cross-check prompt.  Peers are anonymous to prevent
         authority bias.  Requires explicit agree/disagree."""
+        # A reviewer that failed is not a peer opinion. Its verdict is the
+        # synthetic fail-closed "request_changes" this module fabricated, and
+        # for a rejected ANSWER its concerns list carries the rejection notice
+        # itself. Presented here as "Reviewer 2" it was indistinguishable from
+        # a real dissent, so a peer could agree with it and return the
+        # malfunction as a genuine finding about the customer's code -- the
+        # same laundering of a broken reviewer into an opinion that the summary
+        # path had, one round further on.
         peers = ""
-        for i, p in enumerate(peer_reviews):
+        for i, p in enumerate([r for r in peer_reviews if not review_failed(r)]):
             peers += f"\n### Reviewer {i + 1}\n"
             peers += f"- Verdict: {p.get('risk_assessment')}\n"
             peers += f"- Confidence: {p.get('confidence')}\n"
@@ -1078,7 +1166,16 @@ Respond only through the required structured verdict schema:
         """Exit after Round 1 if all models unanimously agree with high confidence."""
         if not consensus or consensus.get("agreement_score", 0) < 1.0:
             return False
-        valid = [r for r in reviews if not r.get("error")]
+        # review_failed, for consistency with every other place that asks
+        # whether a review counted -- NOT because the narrow predicate was
+        # wrong here. Stated plainly because a mutation test showed the two
+        # agree on every input: a rejected review always carries
+        # confidence 0.0 (see _fail_closed_review), so including it can only
+        # drag the average BELOW the 0.85 bar, never above it, and an
+        # all-rejected set averages 0.0 either way. There is no input that
+        # distinguishes them, so there is no test pinning this line, and
+        # inventing one that passes regardless would be worse than none.
+        valid = [r for r in reviews if not review_failed(r)]
         if not valid:
             return False
         avg_conf = sum(r.get("confidence", 0) for r in valid) / len(valid)
@@ -1098,7 +1195,7 @@ Respond only through the required structured verdict schema:
 
     def _pack_deliberation_result(
         self, providers, final_reviews, all_rounds, consensus,
-        use_rubric, rubric, early_exit=False,
+        use_rubric, rubric, early_exit=False, models_needed=None,
     ) -> dict:
         """Package deliberation output in a format compatible with
         _run_multi_model_review so downstream code doesn't change."""
@@ -1108,12 +1205,21 @@ Respond only through the required structured verdict schema:
             "reviews": final_reviews,
             "models_used": len(successful),
             "models_failed": len(failed),
-            "models_requested": len(providers),
+            # Same two facts as the non-deliberative packer, kept in step with
+            # it deliberately: a consumer must not have to know which protocol
+            # ran to read the numbers.
+            "models_requested": (
+                len(providers) if models_needed is None else models_needed
+            ),
+            "models_attempted": len(providers),
             "model_errors": [
                 f"{r.get('provider')}/{r.get('model_name')}: {self._error_type(r)}"
                 for r in failed
             ],
-            "review_coverage": self._review_coverage(final_reviews),
+            "review_coverage": self._review_coverage(
+                final_reviews,
+                len(providers) if models_needed is None else models_needed,
+            ),
             "used_rubric": use_rubric,
             "rubric_name": rubric if use_rubric else None,
             "consensus": consensus,
@@ -1602,24 +1708,62 @@ Respond ONLY with the structured object above."""
 
     @staticmethod
     def _review_failed(review: dict) -> bool:
-        return bool(review.get("error") or review.get("parse_error") or review.get("schema_error"))
+        """Kept as the in-class name; the definition lives at module level so
+        bundle_generator can share it rather than keep a third opinion."""
+        return review_failed(review)
+
+    @classmethod
+    def _pick_ai_summary_source(cls, reviews: list[dict]) -> dict | None:
+        """The first review that actually produced a verdict, or None.
+
+        This used to filter on `not r.get("error")`, which is a narrower test
+        than _review_failed: it catches a provider outage but not a review whose
+        ANSWER was rejected. A schema/parse-rejected review was therefore counted
+        as failed for models_used, for review_coverage and for the consensus
+        vote, and simultaneously picked as the summary source here. Its rejection
+        notice became the displayed summary, and through risk_classifier's
+        ai_summary fallback an "AI concern:" finding -- a reviewer malfunction
+        presented as an opinion about the customer's code.
+
+        One predicate now, so "usable" means the same thing everywhere.
+        """
+        for review in reviews:
+            if not cls._review_failed(review):
+                return review
+        return None
+
 
     @staticmethod
     def _error_type(review: dict) -> str:
         return str(review.get("error") or "InvalidReviewResponse")
 
     @classmethod
-    def _review_coverage(cls, reviews: list[dict]) -> dict:
+    def _review_coverage(cls, reviews: list[dict], requested: int | None = None) -> dict:
+        """What review the tier asked for, and what it actually got.
+
+        `requested` is the TIER's demand, not the attempt count. Without it
+        `complete` meant "nothing we tried failed", which is true and useless
+        when the thing that went wrong is that we only tried once for a change
+        that needed three reviewers. Defaults to the attempt count so an
+        older caller keeps its previous meaning rather than silently
+        reporting a shortfall it never had.
+        """
         failures = [
             {"provider": str(review.get("provider", "")), "error_type": cls._error_type(review)}
             for review in reviews if cls._review_failed(review)
         ]
         attempted = len(reviews)
+        succeeded = attempted - len(failures)
+        if requested is None:
+            requested = attempted
         return {
+            "requested": requested,
             "attempted": attempted,
-            "succeeded": attempted - len(failures),
+            "succeeded": succeeded,
             "failed": len(failures),
-            "complete": not failures,
+            # Complete means the tier got the review it asked for. A reviewer
+            # that was never attempted is just as absent as one that crashed.
+            "complete": not failures and succeeded >= requested,
             "failures": failures,
         }
 
