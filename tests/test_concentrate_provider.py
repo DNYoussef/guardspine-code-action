@@ -368,6 +368,9 @@ def _run_real_entrypoint(event, gateway, extra_env=None, finding_message="Builds
                "GITHUB_SHA": "abc1234", "GITHUB_REF": "refs/pull/7/head", "INPUT_GITHUB_TOKEN": "token",
                "INPUT_POST_COMMENT": "true", "INPUT_GENERATE_BUNDLE": "true", "INPUT_UPLOAD_SARIF": "true",
                "INPUT_AUTO_MERGE": "false", "INPUT_FAIL_ON_DASHBOARD_SYNC_ERROR": "false",
+               # AI review is opt-in since the default flipped to off; these runs exercise
+               # the provider path, so they opt in (a no-key run must still send nothing).
+               "INPUT_AI_REVIEW": "true",
                "INPUT_MODEL_1": SPEC, **(extra_env or {})}
         out, err = io.StringIO(), io.StringIO()
         saved = {k: os.environ.pop(k) for k in ("INPUT_CONCENTRATE_API_KEY", "CONCENTRATE_API_KEY")
@@ -516,7 +519,8 @@ V274_INPUTS = {
     'model_1': None,
     'model_2': None,
     'model_3': None,
-    'ai_review': 'true',
+    # Deliberate change: AI review sends diff content to the model provider, so it is opt-in.
+    'ai_review': 'false',
     'pii_shield_enabled': 'false',
     'pii_shield_mode': 'auto',
     'pii_shield_endpoint': None,

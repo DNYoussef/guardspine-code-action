@@ -43,7 +43,7 @@ def test_disabled_review_says_disabled_not_missing_provider():
     result = DiffAnalyzer(openrouter_key="configured", ai_review=False).analyze(_BILLING_DIFF)
     mmr = result.multi_model_review
     assert mmr["tier"] != "L0"
-    assert mmr["models_attempted"] == 0
+    assert mmr["models_used"] == 0
     assert mmr["reason"] == AI_REVIEW_DISABLED_REASON
 
 
