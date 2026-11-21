@@ -496,7 +496,7 @@ def main():
     model_1 = get_env("INPUT_MODEL_1")  # Used for L1+
     model_2 = get_env("INPUT_MODEL_2")  # Used for L2+
     model_3 = get_env("INPUT_MODEL_3")  # Used for L3+
-    ai_review = parse_bool(get_env("INPUT_AI_REVIEW", "true"))
+    ai_review = parse_bool(get_env("INPUT_AI_REVIEW", "false"))
 
     # Deliberation (multi-round cross-checking)
     deliberate = parse_bool(get_env("INPUT_DELIBERATE", "false"))
@@ -833,6 +833,11 @@ def main():
                 print(f"::warning::PII-Shield error in comment sanitization: {exc}")
                 if pii_shield_fail_closed:
                     sys.exit(1)
+        if not ai_review:
+            comment_body += (
+                "\n\n> AI review is off (`ai_review: false`), so this card reflects "
+                "the rule-based assessment only."
+            )
         try:
             commenter.post_decision_card(comment_body, analysis.get("review_coverage"))
             print("Decision Card posted")

@@ -23,6 +23,8 @@ You need ONE of these (pick whichever you already have):
   CONCENTRATE_API_KEY   Gateway with a host you pin per model. Needs v2.8.0+ and explicit
                         model_1..3 = concentrate/<host>/<model>; see README "Option 5". concentrate.ai
 
+AI review is off by default, because it sends diff content to the model provider.
+To turn it on, add a key and set `ai_review: true` (the examples below do).
 No API key? GuardSpine Code still works in rules-only mode (risk tiers + evidence
 bundles, no AI review). You can add a key later.
 
@@ -55,6 +57,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          ai_review: true   # opt-in: sends diff content to the provider above
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
@@ -130,6 +133,7 @@ Minimal (rules + single AI model):
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
 ```
 
 Standard (compliance rubric + block high risk):
@@ -139,6 +143,7 @@ Standard (compliance rubric + block high risk):
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
     rubric: soc2
     risk_threshold: L3
     fail_on_high_risk: true
@@ -151,6 +156,7 @@ Enterprise (multi-model + PII protection + SARIF):
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
     rubric: hipaa
     risk_threshold: L2
     fail_on_high_risk: true
@@ -182,6 +188,7 @@ RISK TIERS EXPLAINED
   L3  High        Auth, config, sensitive zones. 3 AI models. Requires approval.
   L4  Critical    Payments, PII, security, crypto. 3 AI models. Requires HUMAN approval.
 
+Model counts apply only when ai_review: true is set; the default is rules-only.
 The risk_threshold input controls where the gate kicks in. Default: L3.
 
 
@@ -212,8 +219,9 @@ TROUBLESHOOTING
 ---------------
 
 "No AI review happened"
-  At least one API key must be set as a repo secret. Check that the
-  secret name matches exactly (OPENROUTER_API_KEY, not OpenRouter_Key).
+  AI review is off by default: set `ai_review: true` in the workflow.
+  It also needs an API key set as a repo secret, or an ollama_host. Check that
+  the secret name matches exactly (OPENROUTER_API_KEY, not OpenRouter_Key).
 
 "Action not found"
   Make sure you're using: DNYoussef/guardspine-code-action@v2 (case-sensitive).

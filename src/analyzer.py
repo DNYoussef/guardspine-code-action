@@ -72,6 +72,8 @@ def _silence_sdk_debug_logging() -> None:
         lg.propagate = False
 
 AI_REVIEW_SCHEMA_VERSION = "codeguard.ai_review.v1"
+# Off is a choice, not a missing provider; the log, bundle and PR comment say which.
+AI_REVIEW_DISABLED_REASON = "AI review disabled (ai_review: false) - rules-based only"
 AI_REVIEW_ENVELOPE_KEY = "codeguard_review"
 AI_REVIEW_TOOL_NAME = "submit_codeguard_review"
 AI_REVIEW_RISK_ASSESSMENTS = {"approve", "request_changes", "comment"}
@@ -859,7 +861,11 @@ class DiffAnalyzer:
                 "reviews": [],
                 "models_used": 0,
                 "tier": preliminary_tier,
-                "reason": "L0 tier - rules-based only" if preliminary_tier == "L0" else "No AI providers configured"
+                "reason": (
+                    "L0 tier - rules-based only" if preliminary_tier == "L0"
+                    else AI_REVIEW_DISABLED_REASON if not self.ai_review_enabled
+                    else "No AI providers configured"
+                ),
             }
             self._attach_skipped(result)
             result.models_used = 0
