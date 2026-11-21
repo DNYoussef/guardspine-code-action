@@ -54,6 +54,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+          ai_review: true   # opt-in: sends diff content to the provider above
           risk_threshold: L3
           # PII-Shield: strip secrets from AI prompts & evidence bundles.
           # Runs in-process via WASM -- no endpoint or API key needed.
@@ -87,7 +88,7 @@ jobs:
 pip install guardspine-verify && guardspine-verify .guardspine/bundles/*.json
 ```
 
-> **Troubleshooting**: Missing artifact? Ensure `bundle_dir` matches upload path. Hard fail on L4? Set `fail_on_high_risk: false` (default). No AI review? Provide at least one API key and set `ai_review: true` (default). PII-Shield failing? It runs in-process (no endpoint to check); set `pii_shield_fail_closed: false` for advisory mode.
+> **Troubleshooting**: Missing artifact? Ensure `bundle_dir` matches upload path. Hard fail on L4? Set `fail_on_high_risk: false` (default). No AI review? It is off by default; set `ai_review: true` and configure an API key or `ollama_host`. PII-Shield failing? It runs in-process (no endpoint to check); set `pii_shield_fail_closed: false` for advisory mode.
 
 ---
 
@@ -105,8 +106,8 @@ PR opened/updated
    Generate SHA-256 diff hash for integrity.
        |
        v
-2. TIER-BASED MULTI-MODEL AI REVIEW
-   Models scale with risk tier (not fallback -- actual multi-review):
+2. TIER-BASED MULTI-MODEL AI REVIEW (only with `ai_review: true`; default is rules-only)
+   Models requested per risk tier (not fallback -- actual multi-review):
      L0 (Trivial)  -> 0 models (rules-only, no AI)
      L1 (Low)      -> 1 model
      L2 (Medium)   -> 2 models + rubric scoring
@@ -212,7 +213,7 @@ The decision engine (`src/decision_engine.py`) is the canonical copy. It was ori
 
 ### Risk Tiers
 
-| Tier | Label | AI Models | Rubric | Description | Default Action |
+| Tier | Label | AI Models (with `ai_review: true`) | Rubric | Description | Default Action |
 |------|-------|-----------|--------|-------------|----------------|
 | **L0** | Trivial | 0 (none) | No | Docs, comments, formatting | Auto-approve |
 | **L1** | Low | 1 | No | Tests, non-critical code | Auto-approve |
@@ -331,7 +332,7 @@ Requires `contents: write` permission on the workflow.
 | `model_1` | First model (L1+). Format: `provider/model` or just `model` | Auto-detect |
 | `model_2` | Second model (L2+). Format: `provider/model` or just `model` | Auto-detect |
 | `model_3` | Third model (L3+). Format: `provider/model` or just `model` | Auto-detect |
-| `ai_review` | Enable AI-powered code review | `true` |
+| `ai_review` | Enable AI-powered code review. Sends diff content to the configured model provider, so it is opt-in | `false` |
 | **API Keys** | | |
 | `openai_api_key` | OpenAI key for GPT models (optional) | - |
 | `anthropic_api_key` | Anthropic key for Claude models (optional) | - |
@@ -438,6 +439,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
     model_1: anthropic/claude-sonnet-4.5   # Used for L1+
     model_2: openai/gpt-5.2                 # Used for L2+
     model_3: google/gemini-3-flash          # Used for L3+
@@ -450,6 +452,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     ollama_host: http://localhost:11434
+    ai_review: true   # opt-in: sends diff content to the provider above
     model_1: llama4
     model_2: mistral-large
     model_3: codellama-70b
@@ -464,6 +467,7 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
     ollama_host: http://localhost:11434
+    ai_review: true   # opt-in: sends diff content to the provider above
     model_1: claude-haiku-4-5-20251001  # Uses Anthropic
     model_2: gpt-4.1-mini               # Uses OpenAI
     model_3: llama4                      # Uses Ollama
@@ -471,18 +475,20 @@ Configure up to 3 AI models for tier-based review. Models are used based on risk
 
 #### Option 4: Single Provider (legacy/simple)
 
-Just provide one API key -- GuardSpine Code will use default models:
+Provide one API key and set `ai_review: true` -- GuardSpine Code will use default models:
 
 ```yaml
 # Anthropic only (uses Claude Haiku 4.5 for all tiers)
 - uses: DNYoussef/guardspine-code-action@v2
   with:
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
 
 # OpenAI only (uses GPT 4.1 Mini for all tiers)
 - uses: DNYoussef/guardspine-code-action@v2
   with:
     openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
 ```
 
 | Provider | Data Residency | Best For |
@@ -514,6 +520,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           ollama_host: http://localhost:11434
+          ai_review: true   # opt-in: sends diff content to the provider above
           ollama_model: llama4
 ```
 
@@ -671,8 +678,8 @@ git commit -m "Add GuardSpine Code for PR governance"
 | "we're SOC 2" | `rubric: soc2` |
 | "we handle health data" | `rubric: hipaa` |
 | "we process payments" | `rubric: pci-dss` |
-| "use local AI only" | Add `ollama_host: http://localhost:11434` |
-| "use Claude for analysis" | Add `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` |
+| "use local AI only" | Add `ollama_host: http://localhost:11434` and `ai_review: true` |
+| "use Claude for analysis" | Add `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` and `ai_review: true` |
 | "auto-merge clean PRs" | `auto_merge: true` |
 
 ### Agent Behavior Guidelines
@@ -748,6 +755,7 @@ The raw diff is **never** modified. PII-Shield operates on copies sent to AI mod
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     openrouter_api_key: ${{ secrets.OPENROUTER_API_KEY }}
+    ai_review: true   # opt-in: sends diff content to the provider above
     pii_shield_enabled: true
     pii_shield_salt_fingerprint: sha256:your-org-salt-fingerprint
     pii_shield_fail_closed: true

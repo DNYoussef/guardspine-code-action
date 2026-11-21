@@ -85,9 +85,9 @@ inputs:
     description: 'Third AI model for L3+ reviews. Format: provider/model or just model name'
     required: false
   ai_review:
-    description: 'Enable AI-powered code review (requires at least one API key)'
+    description: 'Enable AI-powered code review (needs an API key or ollama_host). Off by default because it sends diff content to the configured model provider.'
     required: false
-    default: 'true'
+    default: 'false'
   pii_shield_enabled:
     description: 'Enable PII-Shield preprocessing for AI review input'
     required: false
