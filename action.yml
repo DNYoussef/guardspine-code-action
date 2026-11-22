@@ -199,7 +199,7 @@ outputs:
 
 runs:
   using: 'docker'
-  image: 'docker://ghcr.io/dnyoussef/guardspine-code-action@sha256:ba9be777dded41d0d0157188eddc323119c8e827d127349251c1846173f90f0a'
+  image: 'docker://ghcr.io/dnyoussef/guardspine-code-action@sha256:8604de1764aad2394d92dfce7712ea018ec8ca609a607d8c47adfb2c7c901262'
   env:
     INPUT_RISK_THRESHOLD: ${{ inputs.risk_threshold }}
     INPUT_RUBRIC: ${{ inputs.rubric }}
